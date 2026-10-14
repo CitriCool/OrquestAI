@@ -10,6 +10,12 @@ export interface GenerateRequest {
   messages: ChatTurn[];
   maxOutputTokens?: number;
   temperature?: number;
+  /**
+   * 'json' indica que se espera un objeto JSON. No se envía como
+   * response_format porque el soporte varía por modelo; el formato se pide
+   * en las instrucciones y se valida en el servidor.
+   */
+  responseFormat?: 'text' | 'json';
   /** Cancelación por el usuario. */
   signal: AbortSignal;
   timeoutMs: number;

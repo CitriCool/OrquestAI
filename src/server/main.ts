@@ -9,6 +9,7 @@ import { allowedHosts, createSessionToken } from './security/localGuard.js';
 import { log, registerSecret } from './security/redact.js';
 import { openDatabase } from './storage/db.js';
 import { Repository } from './storage/repository.js';
+import { TaskRepository } from './storage/taskRepository.js';
 
 loadEnvFile();
 const config = loadConfig();
@@ -19,6 +20,8 @@ const db = openDatabase(path.join(config.dataDir, 'orquestai.db'));
 const repo = new Repository(db);
 const recovered = repo.recoverInterruptedMessages();
 if (recovered > 0) log.info(`Se marcaron ${recovered} respuesta(s) interrumpida(s) por el cierre anterior.`);
+const recoveredTasks = new TaskRepository(db).recoverInterruptedTasks();
+if (recoveredTasks > 0) log.info(`Se marcaron ${recoveredTasks} planificación(es) interrumpida(s) por el cierre anterior.`);
 
 const app = createApp({
   repo,

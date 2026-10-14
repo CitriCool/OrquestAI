@@ -584,6 +584,68 @@ th {
   margin-top: 16px;
 }
 
+/* ---- Tareas ---- */
+.task-data {
+  margin: 10px 0;
+}
+.task-data summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.pre {
+  white-space: pre-wrap;
+}
+.plan-controls,
+.plan {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 4px;
+}
+.plan-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plan h4 {
+  margin: 14px 0 4px;
+  font-size: 0.9em;
+}
+.plan ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.wide-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9em;
+}
+.versions {
+  margin-top: 10px;
+}
+.task-actions {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.badge.task-plan_ready,
+.badge.plan-proposed {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.badge.task-approved,
+.badge.plan-approved {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.badge.task-plan_failed,
+.badge.plan-invalid {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.badge.task-planning {
+  color: var(--accent);
+}
+
 @media (max-width: 760px) {
   .layout {
     grid-template-columns: 1fr;

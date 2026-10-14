@@ -90,4 +90,66 @@ export const migrations: Migration[] = [
       CREATE INDEX idx_messages_agent ON messages(agent_id);
     `,
   },
+  {
+    version: 3,
+    name: 'tareas_y_planes',
+    sql: `
+      CREATE TABLE tasks (
+        id                   TEXT PRIMARY KEY,
+        title                TEXT NOT NULL,
+        objective            TEXT NOT NULL,
+        context              TEXT NOT NULL DEFAULT '',
+        acceptance_criteria  TEXT NOT NULL DEFAULT '',
+        review_level         TEXT NOT NULL CHECK (review_level IN ('none', 'standard', 'strict')),
+        complexity_override  INTEGER CHECK (complexity_override IN (1, 2, 3)),
+        status               TEXT NOT NULL CHECK (status IN ('draft', 'planning', 'plan_ready', 'plan_failed',
+                               'approved', 'cancelled')),
+        error_kind           TEXT,
+        error_message        TEXT,
+        created_at           TEXT NOT NULL,
+        updated_at           TEXT NOT NULL
+      );
+
+      -- Versiones del plan. Se guardan antes de ejecutar cualquier subtarea.
+      CREATE TABLE plans (
+        id                 TEXT PRIMARY KEY,
+        task_id            TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        version            INTEGER NOT NULL,
+        status             TEXT NOT NULL CHECK (status IN ('proposed', 'approved', 'superseded', 'invalid')),
+        content            TEXT,
+        raw_output         TEXT,
+        validation_errors  TEXT NOT NULL DEFAULT '[]',
+        rule_complexity    INTEGER NOT NULL CHECK (rule_complexity IN (1, 2, 3)),
+        limits             TEXT,
+        feedback           TEXT,
+        provider_id        TEXT NOT NULL,
+        model_id           TEXT NOT NULL,
+        created_at         TEXT NOT NULL,
+        approved_at        TEXT,
+        UNIQUE (task_id, version)
+      );
+
+      -- Cada llamada a un modelo dentro de una tarea.
+      CREATE TABLE task_runs (
+        id                 TEXT PRIMARY KEY,
+        task_id            TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        plan_id            TEXT REFERENCES plans(id) ON DELETE SET NULL,
+        agent_id           TEXT REFERENCES agents(id) ON DELETE SET NULL,
+        kind               TEXT NOT NULL CHECK (kind IN ('plan', 'plan_repair')),
+        provider_id        TEXT NOT NULL,
+        model_id           TEXT NOT NULL,
+        status             TEXT NOT NULL CHECK (status IN ('running', 'complete', 'error', 'cancelled')),
+        error_kind         TEXT,
+        error_message      TEXT,
+        prompt_tokens      INTEGER,
+        completion_tokens  INTEGER,
+        cost               REAL,
+        cost_kind          TEXT CHECK (cost_kind IN ('estimated', 'reported', 'unknown')),
+        started_at         TEXT NOT NULL,
+        finished_at        TEXT
+      );
+      CREATE INDEX idx_task_runs_task ON task_runs(task_id, started_at);
+      CREATE INDEX idx_task_runs_agent ON task_runs(agent_id);
+    `,
+  },
 ];

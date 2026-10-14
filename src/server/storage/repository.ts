@@ -74,11 +74,15 @@ const AGENT_COLUMNS = {
   enabled: 'enabled',
 } as const satisfies Record<keyof UpdateAgentInput, string>;
 
-/** Agentes con su historial de ejecuciones (respuestas del asistente generadas por cada uno). */
+/** Agentes con su historial de ejecuciones: respuestas en chats y llamadas dentro de tareas. */
 const AGENT_SELECT = `
-  SELECT a.*, COUNT(m.id) AS runs, MAX(m.created_at) AS last_run_at
+  SELECT a.*, COUNT(r.agent_id) AS runs, MAX(r.at) AS last_run_at
   FROM agents a
-  LEFT JOIN messages m ON m.agent_id = a.id AND m.role = 'assistant'`;
+  LEFT JOIN (
+    SELECT agent_id, created_at AS at FROM messages WHERE role = 'assistant' AND agent_id IS NOT NULL
+    UNION ALL
+    SELECT agent_id, started_at AS at FROM task_runs WHERE agent_id IS NOT NULL
+  ) r ON r.agent_id = a.id`;
 
 const now = () => new Date().toISOString();
 
@@ -436,7 +440,17 @@ export class Repository {
    */
   deleteAllData(): void {
     this.db.transaction(() => {
-      for (const table of ['messages', 'conversations', 'agents', 'settings', 'provider_consents', 'provider_observations']) {
+      for (const table of [
+        'task_runs',
+        'plans',
+        'tasks',
+        'messages',
+        'conversations',
+        'agents',
+        'settings',
+        'provider_consents',
+        'provider_observations',
+      ]) {
         this.db.prepare(`DELETE FROM ${table}`).run();
       }
     })();

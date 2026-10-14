@@ -5,6 +5,7 @@ export type View =
   | { name: 'chat'; id: string }
   | { name: 'providers' }
   | { name: 'agents' }
+  | { name: 'tasks' }
   | { name: 'settings' };
 
 interface Props {
@@ -16,7 +17,7 @@ interface Props {
 }
 
 /** Secciones previstas que aún no existen: se muestran deshabilitadas, sin aparentar funcionar. */
-const UPCOMING = ['Proyectos', 'Tareas en curso'];
+const UPCOMING = ['Proyectos'];
 
 export function Sidebar({ view, conversations, onNavigate, onNewChat, onDeleteChat }: Props) {
   return (
@@ -47,6 +48,9 @@ export function Sidebar({ view, conversations, onNavigate, onNewChat, onDeleteCh
       </div>
 
       <div class="nav-section">
+        <button class={`nav-link ${view.name === 'tasks' ? 'active' : ''}`} onClick={() => onNavigate({ name: 'tasks' })}>
+          Tareas
+        </button>
         <button class={`nav-link ${view.name === 'agents' ? 'active' : ''}`} onClick={() => onNavigate({ name: 'agents' })}>
           Agentes
         </button>

@@ -1,6 +1,6 @@
 import type { Agent, ChatEvent, Message, SendMessageInput } from '../../shared/schemas.js';
 import { HttpError } from '../http.js';
-import { assertModelAllowed } from '../policies/modelPolicy.js';
+import { assertModelAllowed, requireUsableProvider } from '../policies/modelPolicy.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { ProviderError, type ChatTurn, type ProviderAdapter } from '../providers/types.js';
 import { log } from '../security/redact.js';
@@ -52,20 +52,7 @@ export class ChatService {
         'Habilítalo en Agentes o elige otro agente para esta conversación.',
       );
     }
-    const provider = this.providers.get(input.providerId);
-    if (!provider) throw new HttpError(400, 'config', 'El proveedor indicado no existe.', 'Elige un proveedor de la lista.');
-    const status = provider.getProviderStatus();
-    if (!status.configured) {
-      throw new HttpError(400, 'config', `${provider.label} no está configurado.`, status.notes[0] ?? 'Revisa el archivo .env.');
-    }
-    if (provider.external && !this.repo.hasConsent(provider.id)) {
-      throw new HttpError(
-        409,
-        'policy',
-        `Antes de enviar contenido a ${provider.label} debes aceptar el aviso de envío a un proveedor externo.`,
-        'Acepta el aviso en Modelos y proveedores.',
-      );
-    }
+    const provider = requireUsableProvider(this.providers, this.repo, input.providerId);
 
     // Reserva antes de cualquier espera para que una segunda petición simultánea se rechace.
     const controller = new AbortController();
@@ -216,7 +203,7 @@ export function buildContext(
   return [{ role: 'system', content: systemPrompt(agent) }, ...selected];
 }
 
-function makeTitle(content: string): string {
+export function makeTitle(content: string): string {
   const oneLine = content.replace(/\s+/g, ' ').trim();
   return oneLine.length > 60 ? `${oneLine.slice(0, 57)}...` : oneLine;
 }

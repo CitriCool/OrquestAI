@@ -7,8 +7,11 @@ import type {
   ModelInfo,
   ProviderStatus,
   SendMessageInput,
+  Task,
+  TaskDetail,
   UpdateAgentInput,
 } from '../shared/schemas.js';
+import type { ComplexityLevel, ReviewLevel } from '../shared/schemas.js';
 
 /** Datos editables de un agente nuevo (los valores por omisión los completa el servidor). */
 export type NewAgent = UpdateAgentInput & { name: string; instructions: string; role?: 'specialist' | 'custom' };
@@ -86,6 +89,24 @@ export const api = {
   deleteAgent: (id: string) => json('DELETE', `/agents/${encodeURIComponent(id)}`),
   resetAgent: (id: string) =>
     json<{ agent: Agent }>('POST', `/agents/${encodeURIComponent(id)}/reset`).then((r) => r.agent),
+  listTasks: () => json<{ tasks: Task[] }>('GET', '/tasks').then((r) => r.tasks),
+  createTask: (input: {
+    objective: string;
+    context: string;
+    acceptanceCriteria: string;
+    reviewLevel: ReviewLevel;
+    complexityOverride: ComplexityLevel | null;
+  }) => json<{ task: Task }>('POST', '/tasks', input).then((r) => r.task),
+  getTask: (id: string) => json<{ task: TaskDetail; planning: boolean }>('GET', `/tasks/${encodeURIComponent(id)}`),
+  updateTask: (id: string, input: { title?: string; complexityOverride?: ComplexityLevel | null }) =>
+    json<{ task: TaskDetail }>('PATCH', `/tasks/${encodeURIComponent(id)}`, input),
+  planTask: (id: string, input: { providerId: string; modelId: string; feedback?: string }) =>
+    json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/plan`, input),
+  stopTask: (id: string) => json<{ stopped: boolean }>('POST', `/tasks/${encodeURIComponent(id)}/stop`),
+  approvePlan: (id: string, planId: string) =>
+    json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/approve`, { planId }),
+  cancelTask: (id: string) => json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/cancel`),
+  deleteTask: (id: string) => json('DELETE', `/tasks/${encodeURIComponent(id)}`),
   listProviders: () => json<{ providers: ProviderStatus[] }>('GET', '/providers').then((r) => r.providers),
   listModels: (providerId: string) =>
     json<{ models: ModelInfo[] }>('GET', `/providers/${encodeURIComponent(providerId)}/models`).then((r) => r.models),

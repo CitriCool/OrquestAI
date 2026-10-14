@@ -6,18 +6,25 @@ import {
   consentInput,
   createAgentInput,
   createConversationInput,
+  createTaskInput,
+  idSchema,
+  planTaskInput,
   sendMessageInput,
   updateAgentInput,
   updateConversationInput,
+  updateTaskInput,
   type ProviderStatus,
 } from '../shared/schemas.js';
-import { ChatService } from './chat/chatService.js';
+import { ChatService, makeTitle } from './chat/chatService.js';
 import { apiError, HttpError, parseJson } from './http.js';
 import type { ProviderRegistry } from './providers/registry.js';
 import { ProviderError } from './providers/types.js';
 import { localGuard } from './security/localGuard.js';
 import { log } from './security/redact.js';
 import type { Repository } from './storage/repository.js';
+import { TaskRepository } from './storage/taskRepository.js';
+import { executionLimits } from './tasks/complexity.js';
+import { PlanningService } from './tasks/planningService.js';
 
 export interface AppDeps {
   repo: Repository;
@@ -33,10 +40,13 @@ const settingsInput = z.object({
 });
 
 const deleteAllInput = z.object({ confirm: z.literal('BORRAR') });
+const approvePlanInput = z.object({ planId: idSchema });
 
 export function createApp(deps: AppDeps) {
   const { repo, providers } = deps;
   const chat = new ChatService(repo, providers, deps.providerTimeoutMs);
+  const tasks = new TaskRepository(repo.db);
+  const planning = new PlanningService(repo, tasks, providers, deps.providerTimeoutMs);
   const api = new Hono();
   repo.ensureDefaultAgents();
 
@@ -188,6 +198,75 @@ export function createApp(deps: AppDeps) {
     return c.json({ agent: repo.resetAgent(agent.id) });
   });
 
+  // ---- Tareas y planes ----
+  const taskDetail = (id: string) => {
+    const task = tasks.getTaskDetail(id);
+    if (!task) throw taskNotFound();
+    return { task, planning: planning.isActive(id) };
+  };
+
+  api.get('/tasks', (c) => c.json({ tasks: tasks.listTasks() }));
+
+  api.post('/tasks', async (c) => {
+    const input = await parseJson(c, createTaskInput);
+    const task = tasks.createTask({ ...input, title: input.title ?? makeTitle(input.objective) });
+    return c.json({ task }, 201);
+  });
+
+  api.get('/tasks/:id', (c) => c.json(taskDetail(c.req.param('id'))));
+
+  api.patch('/tasks/:id', async (c) => {
+    const input = await parseJson(c, updateTaskInput);
+    const task = tasks.updateTask(c.req.param('id'), input);
+    if (!task) throw taskNotFound();
+    // Los límites dependen del nivel final: se recalculan en el plan propuesto.
+    const plan = tasks.currentPlan(task.id);
+    if (input.complexityOverride !== undefined && plan?.status === 'proposed' && plan.content) {
+      const level = task.complexityOverride ?? plan.content.complexity.level;
+      tasks.updatePlanLimits(plan.id, executionLimits(level, plan.content.subtasks.length, task.reviewLevel));
+    }
+    return c.json(taskDetail(task.id));
+  });
+
+  api.delete('/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    planning.cancel(id);
+    if (!tasks.deleteTask(id)) throw taskNotFound();
+    return c.json({ deleted: true });
+  });
+
+  api.post('/tasks/:id/plan', async (c) => {
+    const input = await parseJson(c, planTaskInput);
+    await planning.start(c.req.param('id'), input);
+    return c.json(taskDetail(c.req.param('id')), 202);
+  });
+
+  /** Detiene la planificación en curso. */
+  api.post('/tasks/:id/stop', (c) => c.json({ stopped: planning.cancel(c.req.param('id')) }));
+
+  api.post('/tasks/:id/approve', async (c) => {
+    const input = await parseJson(c, approvePlanInput);
+    const task = tasks.getTask(c.req.param('id'));
+    if (!task) throw taskNotFound();
+    const plan = tasks.currentPlan(task.id);
+    if (planning.isActive(task.id) || task.status !== 'plan_ready' || plan?.id !== input.planId || plan.status !== 'proposed' || !plan.content) {
+      throw new HttpError(409, 'invalid_request', 'Ese plan no se puede aprobar: no es la versión propuesta vigente.', 'Recarga la tarea y revisa el plan actual.');
+    }
+    const level = task.complexityOverride ?? plan.content.complexity.level;
+    tasks.updatePlanLimits(plan.id, executionLimits(level, plan.content.subtasks.length, task.reviewLevel));
+    tasks.approvePlan(plan.id);
+    tasks.setTaskStatus(task.id, 'approved');
+    return c.json(taskDetail(task.id));
+  });
+
+  api.post('/tasks/:id/cancel', (c) => {
+    const id = c.req.param('id');
+    if (!tasks.getTask(id)) throw taskNotFound();
+    planning.cancel(id);
+    tasks.setTaskStatus(id, 'cancelled');
+    return c.json(taskDetail(id));
+  });
+
   // ---- Proveedores y modelos ----
   api.get('/providers', (c) => {
     const list: ProviderStatus[] = [...providers.values()].map((p) => {
@@ -243,6 +322,8 @@ export function createApp(deps: AppDeps) {
   api.delete('/data', async (c) => {
     await parseJson(c, deleteAllInput);
     for (const conv of repo.listConversations()) chat.stop(conv.id);
+    for (const task of tasks.listTasks()) planning.cancel(task.id);
+    await planning.idle();
     repo.deleteAllData();
     return c.json({ deleted: true });
   });
@@ -250,6 +331,10 @@ export function createApp(deps: AppDeps) {
   const app = new Hono();
   app.route('/api', api);
   return app;
+}
+
+function taskNotFound() {
+  return new HttpError(404, 'invalid_request', 'La tarea no existe.', 'Vuelve a la lista de tareas.');
 }
 
 function agentNotFound() {

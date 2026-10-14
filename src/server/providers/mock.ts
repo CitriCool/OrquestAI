@@ -7,6 +7,10 @@ import type { GenerateRequest, GenerateResponse, ProviderAdapter } from './types
  * probar la interfaz sin claves. Comandos en el último mensaje del usuario:
  *   /error 429 | 500 | 401 | 403 | 404 | timeout | red   → simula ese fallo
  *   /lento                                                → respuesta lenta (para probar Detener)
+ * Si se pide JSON (planificación), devuelve un plan de ejemplo. En el
+ * objetivo de la tarea:
+ *   /plan invalido    → nunca devuelve un plan válido
+ *   /plan reparable   → el primer intento es inválido y la corrección es válida
  */
 export const MOCK_MODELS: ModelInfo[] = [
   {
@@ -52,6 +56,16 @@ export function createMockProvider(opts: { delayMs?: number; slowDelayMs?: numbe
       },
     };
     simulated[command]?.();
+
+    if (req.responseFormat === 'json') {
+      const all = req.messages.map((m) => m.content).join('\n');
+      const isRepair = req.messages.some((m) => m.role === 'assistant');
+      const invalid = all.includes('/plan invalido') || (all.includes('/plan reparable') && !isRepair);
+      const text = invalid ? 'Aquí tienes el plan: (sin JSON)' : JSON.stringify(mockPlan());
+      if (delayMs > 0) await sleep(delayMs, req.signal).catch(() => undefined);
+      if (req.signal.aborted) throw classifyThrown(new DOMException('Cancelado', 'AbortError'), { userAborted: true, timedOut: false });
+      return { text, finishReason: 'stop', rawUsage: { prompt_tokens: Math.ceil(all.length / 4), completion_tokens: 120, cost: 0 } };
+    }
 
     const slow = command === '/lento';
     const text = slow
@@ -103,6 +117,37 @@ export function createMockProvider(opts: { delayMs?: number; slowDelayMs?: numbe
       };
     },
     listModels: async () => MOCK_MODELS,
+  };
+}
+
+/** Plan válido de ejemplo con los agentes iniciales. */
+function mockPlan() {
+  return {
+    interpretedObjective: 'Plan simulado para probar la aplicación sin coste.',
+    complexity: { level: 2, justification: 'Nivel de ejemplo del proveedor simulado.' },
+    acceptanceCriteria: ['La solución responde al objetivo.', 'Se indica cómo verificarla.'],
+    subtasks: [
+      {
+        id: 's1',
+        title: 'Analizar alternativas',
+        description: 'Comparar enfoques posibles y elegir uno.',
+        agentId: 'arquitecto',
+        dependsOn: [],
+        expectedOutput: 'Recomendación justificada.',
+      },
+      {
+        id: 's2',
+        title: 'Proponer la implementación',
+        description: 'Desarrollar la alternativa elegida.',
+        agentId: 'desarrollador',
+        dependsOn: ['s1'],
+        expectedOutput: 'Código o pasos concretos y cómo comprobarlos.',
+      },
+    ],
+    reviewStrategy: 'El Revisor crítico evalúa la propuesta frente a los criterios de aceptación.',
+    completionConditions: ['Todos los criterios se cumplen o quedan justificados.'],
+    assumptions: ['Proveedor simulado: no hay análisis real.'],
+    questions: [],
   };
 }
 

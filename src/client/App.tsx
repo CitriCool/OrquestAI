@@ -7,6 +7,7 @@ import { AgentsPage } from './pages/AgentsPage.js';
 import { ChatPage } from './pages/ChatPage.js';
 import { ProvidersPage } from './pages/ProvidersPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
+import { TasksPage } from './pages/TasksPage.js';
 
 export function App() {
   const [view, setView] = useState<View>({ name: 'home' });
@@ -71,6 +72,7 @@ export function App() {
           </section>
         )}
         {view.name === 'chat' && <ChatPage key={view.id} conversationId={view.id} onChanged={refresh} />}
+        {view.name === 'tasks' && <TasksPage />}
         {view.name === 'agents' && <AgentsPage onChat={(agentId) => newChat(agentId)} />}
         {view.name === 'providers' && <ProvidersPage />}
         {view.name === 'settings' && (

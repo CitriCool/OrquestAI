@@ -5,13 +5,14 @@ import { describe, expect, it } from 'vitest';
 import { migrate, openDatabase } from '../../src/server/storage/db.js';
 import { migrations } from '../../src/server/storage/migrations.js';
 import { Repository } from '../../src/server/storage/repository.js';
+import { TaskRepository } from '../../src/server/storage/taskRepository.js';
 
 describe('persistencia SQLite', () => {
   it('aplica las migraciones una sola vez', () => {
     const db = openDatabase(':memory:');
     expect(migrate(db, migrations)).toEqual([]);
     const versions = db.prepare('SELECT version FROM schema_migrations').all();
-    expect(versions).toEqual([{ version: 1 }, { version: 2 }]);
+    expect(versions).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
   });
 
   it('borrar una conversación elimina sus mensajes (integridad referencial)', () => {
@@ -26,7 +27,7 @@ describe('persistencia SQLite', () => {
     const db = openDatabase(':memory:', migrations.filter((m) => m.version === 1));
     const old = new Date().toISOString();
     db.prepare('INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run('c1', 'Antigua', old, old);
-    expect(migrate(db, migrations)).toEqual([2]);
+    expect(migrate(db, migrations)).toEqual([2, 3]);
     const repo = new Repository(db);
     expect(repo.getConversation('c1')).toMatchObject({ title: 'Antigua', agentId: null });
   });
@@ -73,6 +74,35 @@ describe('persistencia SQLite', () => {
     expect(repo.deleteAgent(a.id)).toBe(true);
     expect(repo.getConversation(c.id)!.agentId).toBeNull();
     expect(repo.listMessages(c.id)[0]!.agentId).toBeNull();
+  });
+
+  it('al reiniciar, una planificación interrumpida vuelve a su plan vigente o queda fallida', () => {
+    const db = openDatabase(':memory:');
+    new Repository(db).ensureDefaultAgents();
+    const tasks = new TaskRepository(db);
+    const input = { objective: 'x', context: '', acceptanceCriteria: '', reviewLevel: 'standard' as const, complexityOverride: null };
+    const withPlan = tasks.createTask({ ...input, title: 'Con plan' });
+    tasks.addPlan({
+      taskId: withPlan.id,
+      status: 'proposed',
+      content: null,
+      rawOutput: null,
+      validationErrors: [],
+      ruleComplexity: 1,
+      limits: null,
+      feedback: null,
+      providerId: 'simulado',
+      modelId: 'simulado-basico',
+    });
+    const without = tasks.createTask({ ...input, title: 'Sin plan' });
+    tasks.setTaskStatus(withPlan.id, 'planning');
+    tasks.setTaskStatus(without.id, 'planning');
+    const run = tasks.startRun({ taskId: without.id, agentId: 'coordinador', kind: 'plan', providerId: 'simulado', modelId: 'm' });
+
+    expect(tasks.recoverInterruptedTasks()).toBe(2);
+    expect(tasks.getTask(withPlan.id)!.status).toBe('plan_ready');
+    expect(tasks.getTask(without.id)!.status).toBe('plan_failed');
+    expect(tasks.getRun(run.id)!.status).toBe('cancelled');
   });
 
   it('rechaza mensajes de conversaciones inexistentes', () => {

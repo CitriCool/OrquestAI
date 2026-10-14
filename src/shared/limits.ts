@@ -8,4 +8,10 @@ export const LIMITS = {
   agentInstructionsMax: 8_000,
   agentSpecialtyMax: 200,
   agentMaxOutputTokens: 32_000,
+  taskObjectiveMax: 4_000,
+  taskContextMax: 20_000,
+  taskCriteriaMax: 4_000,
+  feedbackMax: 4_000,
+  /** Un plan con más subtareas se rechaza: conviene dividir la tarea. */
+  planMaxSubtasks: 8,
 } as const;
