@@ -1,6 +1,6 @@
 # OrquestAI
 
-Escritorio personal de IA para Ingeniería Civil Informática. Se ejecuta en tu equipo como una aplicación local que abres en el navegador.
+Escritorio personal de IA para Ingeniero(s) Civil(es) Informático. Se ejecuta en tu equipo como una aplicación local que abres en el navegador.
 
 > **Estado: Fase 3, Sprint 3.1 (precios, modos de coste y presupuestos).** Funciona el chat con proveedores reales y simulados, con persistencia local. Puedes gestionar agentes, conversar con un agente concreto y crear tareas: el Coordinador las planifica, tú apruebas el plan y los agentes lo ejecutan con revisión crítica y síntesis. Los modelos de pago se pueden usar dentro de un modo de coste y de presupuestos que el servidor controla antes de cada llamada. El escalamiento autorizado a modelos de pago y el panel de consumo llegan en los Sprints 3.2 y 3.3, y la recuperación automática de tareas en la Fase 4 (ver [Hoja de ruta](#hoja-de-ruta)).
 >
