@@ -30,6 +30,14 @@ export async function assertModelAllowed(provider: ProviderAdapter, modelId: str
       'Elige otro modelo en Modelos y proveedores.',
     );
   }
+  if (model.restriction) {
+    throw new HttpError(
+      403,
+      'policy',
+      `El modelo "${modelId}" no se puede usar desde esta aplicación: ${model.restriction}`,
+      'Elige otro modelo gratuito, por ejemplo uno de OpenRouter.',
+    );
+  }
   if (model.costClass !== 'free') {
     const reason =
       model.costClass === 'unknown' ? 'no tiene una clasificación de coste verificable' : 'no es gratuito';

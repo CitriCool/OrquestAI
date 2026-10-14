@@ -97,6 +97,8 @@ export const modelInfoSchema = z.object({
   costSource: z.string(),
   contextLength: z.number().int().positive().nullable(),
   verifiedAt: z.string().nullable(),
+  /** Si existe, el modelo no se puede usar desde esta aplicación y el motivo se muestra al usuario. */
+  restriction: z.string().nullable().optional(),
 });
 export type ModelInfo = z.infer<typeof modelInfoSchema>;
 

@@ -32,7 +32,7 @@ export function ModelPicker({ providers, providerId, modelId, disabled, onChange
         if (cancelled) return;
         setModels(m);
         if (!m.some((x) => x.id === modelId)) {
-          const first = m.find((x) => x.costClass === 'free') ?? m[0];
+          const first = m.find((x) => x.costClass === 'free' && !x.restriction) ?? m.find((x) => !x.restriction);
           if (first) onChange(providerId, first.id);
         }
       })
@@ -44,7 +44,8 @@ export function ModelPicker({ providers, providerId, modelId, disabled, onChange
   }, [providerId, provider?.configured]);
 
   const visible = useMemo(
-    () => models.filter((m) => !onlyFree || m.costClass === 'free' || m.id === modelId),
+    // Los modelos con restricción no se ofrecen: el servidor los rechazaría.
+    () => models.filter((m) => !m.restriction && (!onlyFree || m.costClass === 'free' || m.id === modelId)),
     [models, onlyFree, modelId],
   );
   const selected = models.find((m) => m.id === modelId);

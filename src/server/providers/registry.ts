@@ -40,10 +40,13 @@ export function createProviderRegistry(config: AppConfig, extra: ProviderAdapter
           costSource:
             'Documentación de OpenCode Zen: gratuito por tiempo limitado. Durante ese periodo los datos enviados pueden usarse para mejorar el modelo.',
           verifiedAt: '2026-10-14',
+          // Prueba real del 14-10-2026: la API respondió 403 "OpenCode's free tier can only be used from within OpenCode".
+          restriction:
+            'El nivel gratuito de OpenCode Zen solo se puede usar desde el cliente oficial de OpenCode; la API lo rechaza (403) desde otras aplicaciones.',
         },
       ],
       notes: [
-        'Big Pickle es gratuito por tiempo limitado y tus datos pueden usarse para mejorar el modelo durante ese periodo.',
+        'El nivel gratuito (Big Pickle) solo funciona desde el cliente oficial de OpenCode, no desde esta aplicación (verificado el 14-10-2026).',
         'Los precios de los demás modelos de Zen no se leen automáticamente; se tratan como de coste desconocido.',
       ],
     }),

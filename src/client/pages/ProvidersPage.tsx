@@ -127,9 +127,17 @@ function ProviderCard({ provider: p, onChanged }: { provider: ProviderStatus; on
                     </td>
                     <td>
                       <span class={`badge ${m.costClass === 'free' ? 'ok' : 'warn'}`}>{costLabel(m.costClass)}</span>
+                      {m.restriction && (
+                        <span class="badge danger" title={m.restriction}>
+                          No disponible aquí
+                        </span>
+                      )}
                     </td>
                     <td>{m.contextLength ? m.contextLength.toLocaleString('es') : '—'}</td>
-                    <td class="small">{m.costSource}</td>
+                    <td class="small">
+                      {m.costSource}
+                      {m.restriction && <div class="msg-error">{m.restriction}</div>}
+                    </td>
                     <td class="small">{m.verifiedAt ? formatTime(m.verifiedAt) : '—'}</td>
                   </tr>
                 ))}

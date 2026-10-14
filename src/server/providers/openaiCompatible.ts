@@ -18,6 +18,7 @@ export interface KnownModel {
   costSource: string;
   verifiedAt: string | null;
   contextLength?: number | null;
+  restriction?: string | null;
 }
 
 export interface OpenAICompatibleOptions {
@@ -78,6 +79,7 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): P
         costSource: known.costSource,
         contextLength: known.contextLength ?? (typeof m.context_length === 'number' ? m.context_length : null),
         verifiedAt: known.verifiedAt,
+        restriction: known.restriction ?? null,
       };
     }
     let costClass: ModelInfo['costClass'] = 'unknown';
@@ -128,6 +130,7 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): P
           costSource: k.costSource,
           contextLength: k.contextLength ?? null,
           verifiedAt: k.verifiedAt,
+          restriction: k.restriction ?? null,
         });
       }
     }
