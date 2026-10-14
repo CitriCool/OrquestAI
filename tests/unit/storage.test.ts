@@ -12,7 +12,7 @@ describe('persistencia SQLite', () => {
     const db = openDatabase(':memory:');
     expect(migrate(db, migrations)).toEqual([]);
     const versions = db.prepare('SELECT version FROM schema_migrations').all();
-    expect(versions).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
+    expect(versions).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
   });
 
   it('borrar una conversación elimina sus mensajes (integridad referencial)', () => {
@@ -27,7 +27,7 @@ describe('persistencia SQLite', () => {
     const db = openDatabase(':memory:', migrations.filter((m) => m.version === 1));
     const old = new Date().toISOString();
     db.prepare('INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run('c1', 'Antigua', old, old);
-    expect(migrate(db, migrations)).toEqual([2, 3, 4]);
+    expect(migrate(db, migrations)).toEqual([2, 3, 4, 5]);
     const repo = new Repository(db);
     expect(repo.getConversation('c1')).toMatchObject({ title: 'Antigua', agentId: null });
   });
@@ -50,7 +50,7 @@ describe('persistencia SQLite', () => {
        VALUES ('r1', 't1', 'p1', 'coordinador', 'plan', 'simulado', 'simulado-basico', 'complete', ?)`,
     ).run(ts);
 
-    expect(migrate(db, migrations)).toEqual([4]);
+    expect(migrate(db, migrations)).toEqual([4, 5]);
     const tasks = new TaskRepository(db);
     const detail = tasks.getTaskDetail('t1')!;
     expect(detail).toMatchObject({ status: 'approved', result: null, outcome: null, limitations: [] });
@@ -111,7 +111,7 @@ describe('persistencia SQLite', () => {
     const db = openDatabase(':memory:');
     new Repository(db).ensureDefaultAgents();
     const tasks = new TaskRepository(db);
-    const input = { objective: 'x', context: '', acceptanceCriteria: '', reviewLevel: 'standard' as const, complexityOverride: null };
+    const input = { objective: 'x', context: '', acceptanceCriteria: '', reviewLevel: 'standard' as const, complexityOverride: null, costMode: null, budgetUsd: null };
     const withPlan = tasks.createTask({ ...input, title: 'Con plan' });
     tasks.addPlan({
       taskId: withPlan.id,

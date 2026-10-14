@@ -2,7 +2,7 @@
 
 Escritorio personal de IA para Ingeniería Civil Informática. Se ejecuta en tu equipo como una aplicación local que abres en el navegador.
 
-> **Estado: Fase 2 completa (agentes y orquestación).** Funciona el chat con proveedores reales y simulados, con persistencia local. Puedes gestionar agentes, conversar con un agente concreto y crear tareas: el Coordinador las planifica, tú apruebas el plan y los agentes lo ejecutan con revisión crítica y síntesis. Los modelos de pago con presupuestos llegan en la Fase 3 y la recuperación automática de tareas en la Fase 4 (ver [Hoja de ruta](#hoja-de-ruta)).
+> **Estado: Fase 3, Sprint 3.1 (precios, modos de coste y presupuestos).** Funciona el chat con proveedores reales y simulados, con persistencia local. Puedes gestionar agentes, conversar con un agente concreto y crear tareas: el Coordinador las planifica, tú apruebas el plan y los agentes lo ejecutan con revisión crítica y síntesis. Los modelos de pago se pueden usar dentro de un modo de coste y de presupuestos que el servidor controla antes de cada llamada. El escalamiento autorizado a modelos de pago y el panel de consumo llegan en los Sprints 3.2 y 3.3, y la recuperación automática de tareas en la Fase 4 (ver [Hoja de ruta](#hoja-de-ruta)).
 >
 > **No existe instalador de escritorio.** La aplicación necesita Node.js y se inicia con un comando.
 
@@ -123,11 +123,23 @@ Los agentes con **modelo preferido** usan el suyo. Los demás usan el modelo que
 
 **Tiempos.** Cada llamada dentro de una tarea puede durar hasta `TASK_CALL_TIMEOUT_MS` (300 s por omisión), porque esas respuestas son largas; el chat usa `PROVIDER_TIMEOUT_MS` (120 s). Con modelos gratuitos, una tarea de 3 subtareas tarda unos 4 a 5 minutos.
 
-## Política de costes en esta versión
+## Política de costes
 
-Modo activo: **A · exclusivamente gratuito**. Antes de cada envío, el servidor comprueba que el modelo esté clasificado como gratuito. Bloquea los modelos de pago y los que no tienen un coste verificable, aunque la interfaz intente usarlos. Los modelos de pago, con presupuestos y autorización explícita, se habilitan en la Fase 3.
+Se configura en **Ajustes → Política de costes**, y cada tarea puede fijar su propio modo y presupuesto. El servidor la aplica **antes de cada llamada**, sin depender de la interfaz.
 
-Cada respuesta muestra el uso de tokens y el coste distinguiendo entre **coste reportado** (lo informó el proveedor), **coste estimado** y **coste desconocido**.
+| Modo | Qué permite |
+|---|---|
+| **A · exclusivamente gratuito** (por omisión) | Solo modelos con precio 0 en el listado del proveedor (entrada, salida **y** por solicitud). Nunca cambia solo a un modelo de pago. |
+| **B · económico** | Modelos gratuitos y **económicos** (hasta USD 2 por millón de tokens de salida), dentro de los presupuestos. Los modelos más caros solo entrarán mediante escalamiento autorizado (Sprint 3.2). |
+| **C · control manual** | Cualquier modelo con precio conocido, dentro de los presupuestos. Los modelos sin precio solo se permiten si lo autorizas expresamente; su gasto no se puede limitar. |
+
+**Precios.** Salen del listado de OpenRouter, que publica USD por token, con una variante opcional por solicitud. Según el precio de salida, cada modelo es gratuito, económico (≤ USD 2/M), de pago (entre USD 2/M y USD 15/M) o de pago alto (≥ USD 15/M). Estos umbrales los fija la aplicación, no el proveedor. Si un modelo cobra más en ciertos casos (por ejemplo, con contexto largo), se usa el precio **más alto** para no subestimar. OpenCode Zen no publica sus precios, así que sus modelos de pago quedan con coste desconocido.
+
+**Presupuestos.** Hay un presupuesto por tarea (por omisión USD 0.50), uno diario (USD 1) y uno mensual (USD 10). Antes de cada llamada de pago, el servidor estima su **coste máximo**: toda la entrada, contada con más tokens de los habituales, más el máximo de salida permitido. Si esa cifra, sumada a lo ya gastado y a las llamadas en curso, supera algún presupuesto, la llamada **no se hace**. En una tarea, el bloqueo detiene la ejecución de forma controlada, guarda lo obtenido y entrega un resultado parcial que lo explica.
+
+**Registro del consumo.** Se guarda el **coste reportado** por el proveedor cuando lo informa (OpenRouter lo incluye en cada respuesta, en créditos). Si no lo informa, se guarda un **coste estimado** con el precio y los tokens, marcado como tal. Si tampoco hay precio, queda como **coste desconocido** y se cuenta aparte. Una estimación nunca se presenta como coste real. En Ajustes ves el gasto del día y del mes, y en cada tarea, lo que lleva gastado frente a su presupuesto. Las tareas que se ejecutaron antes de la Fase 3 no tienen coste registrado. Los periodos usan la hora local de este equipo.
+
+> Un modelo gratuito puede dejar de serlo o desaparecer: la clasificación se vuelve a leer del listado (como máximo cada 10 minutos) y se comprueba en cada llamada.
 
 ## Seguridad y privacidad
 
@@ -198,7 +210,9 @@ tests/
 | 2.1 | Gestión de agentes y chat con un agente | **Implementado** |
 | 2.2 | Coordinador: tareas, planes en JSON validado y aprobación del plan | **Implementado** |
 | 2.3 | Ejecución secuencial de subtareas, revisión crítica, síntesis y vista del flujo | **Implementado** |
-| 3 | Modelos de pago, presupuestos y escalamiento | Pendiente |
+| 3.1 | Precios, modos de coste A/B/C, presupuestos por tarea, día y mes, y registro del consumo | **Implementado** |
+| 3.2 | Escalamiento autorizado a modelos de pago | Pendiente |
+| 3.3 | Panel de consumo y simulación del coste de un plan | Pendiente |
 | 4 | Transferencia y recuperación de tareas | Pendiente |
 | 5 | Seguridad, pruebas de integración y documentación completa | Pendiente |
 | 6 | Estabilización | Pendiente |
@@ -215,6 +229,8 @@ tests/
 - Los planes no se editan a mano: se piden versiones nuevas con comentarios.
 - La salida en JSON se pide en las instrucciones y se valida en el servidor; no se usa el modo JSON nativo de los proveedores porque su soporte varía según el modelo.
 - Los modelos gratuitos suelen responder con límite de solicitudes (429). Aún no hay reintentos automáticos (Fase 4).
+- Los modelos de pago se probaron con modelos simulados de precio ficticio. Con OpenRouter real solo se verificó el listado de precios y el coste reportado (0) de un modelo gratuito: no se hizo ninguna llamada de pago.
+- El presupuesto por sesión del prompt maestro se cubre con los presupuestos diario y mensual; no hay un presupuesto por sesión aparte.
 - Aún no hay reintentos automáticos ni modelos de respaldo (Fase 4); los errores se muestran con la acción recomendada.
 - La salida estructurada (JSON) de los modelos se marca como «desconocida» hasta verificarla (Fase 2).
 - El adaptador de Gemini API directo queda para una fase posterior; hoy los modelos Gemini se pueden usar a través de OpenRouter.

@@ -29,6 +29,8 @@ interface TaskRow {
   result: string | null;
   outcome: Task['outcome'];
   limitations: string;
+  cost_mode: Task['costMode'];
+  budget_usd: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -91,6 +93,8 @@ function toTask(r: TaskRow): Task {
     result: r.result,
     outcome: r.outcome,
     limitations: JSON.parse(r.limitations) as string[],
+    costMode: r.cost_mode,
+    budgetUsd: r.budget_usd,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -152,7 +156,8 @@ export class TaskRepository {
     return row ? toTask(row) : null;
   }
 
-  getTaskDetail(id: string): TaskDetail | null {
+  /** Detalle sin los datos de coste, que añade la política de costes. */
+  getTaskDetail(id: string): Omit<TaskDetail, 'effectiveCostMode' | 'spending'> | null {
     const task = this.getTask(id);
     if (!task) return null;
     const plans = (
@@ -170,8 +175,8 @@ export class TaskRepository {
     this.db
       .prepare(
         `INSERT INTO tasks (id, title, objective, context, acceptance_criteria, review_level, complexity_override,
-           status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+           cost_mode, budget_usd, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
       )
       .run(
         id,
@@ -181,22 +186,35 @@ export class TaskRepository {
         input.acceptanceCriteria,
         input.reviewLevel,
         input.complexityOverride,
+        input.costMode,
+        input.budgetUsd,
         ts,
         ts,
       );
     return this.getTask(id)!;
   }
 
-  updateTask(id: string, input: { title?: string; complexityOverride?: ComplexityLevel | null }): Task | null {
+  updateTask(
+    id: string,
+    input: {
+      title?: string;
+      complexityOverride?: ComplexityLevel | null;
+      costMode?: Task['costMode'];
+      budgetUsd?: number | null;
+    },
+  ): Task | null {
+    const columns = {
+      title: 'title',
+      complexityOverride: 'complexity_override',
+      costMode: 'cost_mode',
+      budgetUsd: 'budget_usd',
+    } as const;
     const sets: string[] = [];
     const values: unknown[] = [];
-    if (input.title !== undefined) {
-      sets.push('title = ?');
-      values.push(input.title);
-    }
-    if (input.complexityOverride !== undefined) {
-      sets.push('complexity_override = ?');
-      values.push(input.complexityOverride);
+    for (const [key, column] of Object.entries(columns) as [keyof typeof columns, string][]) {
+      if (input[key] === undefined) continue;
+      sets.push(`${column} = ?`);
+      values.push(input[key]);
     }
     if (sets.length === 0) return this.getTask(id);
     const res = this.db.prepare(`UPDATE tasks SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...values, now(), id);

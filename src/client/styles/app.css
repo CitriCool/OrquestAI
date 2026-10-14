@@ -749,6 +749,70 @@ th {
   margin-top: 12px;
 }
 
+/* ---- Costes ---- */
+.modes {
+  border: 0;
+  padding: 0;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.modes legend {
+  font-size: 0.9em;
+  margin-bottom: 4px;
+}
+.mode {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.mode.active {
+  border-color: var(--accent);
+}
+.mode > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.spending {
+  margin: 8px 0;
+}
+.meter {
+  height: 8px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.meter > span {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+}
+.meter > span.high {
+  background: var(--danger);
+}
+.task-costs {
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.92em;
+}
+label.inline {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+label.inline input {
+  width: 110px;
+}
+
 @media (max-width: 760px) {
   .layout {
     grid-template-columns: 1fr;

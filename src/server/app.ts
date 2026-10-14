@@ -4,6 +4,7 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import {
   consentInput,
+  costSettingsSchema,
   createAgentInput,
   createConversationInput,
   createTaskInput,
@@ -18,6 +19,7 @@ import {
 } from '../shared/schemas.js';
 import { ChatService, makeTitle } from './chat/chatService.js';
 import { apiError, HttpError, parseJson } from './http.js';
+import { CostPolicy } from './policies/costPolicy.js';
 import type { ProviderRegistry } from './providers/registry.js';
 import { ProviderError } from './providers/types.js';
 import { localGuard } from './security/localGuard.js';
@@ -48,11 +50,12 @@ const approvePlanInput = z.object({ planId: idSchema });
 
 export function createApp(deps: AppDeps) {
   const { repo, providers } = deps;
-  const chat = new ChatService(repo, providers, deps.providerTimeoutMs);
+  const costs = new CostPolicy(repo);
+  const chat = new ChatService(repo, providers, deps.providerTimeoutMs, costs);
   const tasks = new TaskRepository(repo.db);
   const taskTimeout = deps.taskCallTimeoutMs ?? deps.providerTimeoutMs;
-  const planning = new PlanningService(repo, tasks, providers, taskTimeout);
-  const execution = new ExecutionService(repo, tasks, providers, taskTimeout);
+  const planning = new PlanningService(repo, tasks, providers, taskTimeout, costs);
+  const execution = new ExecutionService(repo, tasks, providers, taskTimeout, costs);
   const api = new Hono();
   repo.ensureDefaultAgents();
 
@@ -206,8 +209,9 @@ export function createApp(deps: AppDeps) {
 
   // ---- Tareas y planes ----
   const taskDetail = (id: string) => {
-    const task = tasks.getTaskDetail(id);
-    if (!task) throw taskNotFound();
+    const detail = tasks.getTaskDetail(id);
+    if (!detail) throw taskNotFound();
+    const task = { ...detail, effectiveCostMode: costs.modeFor(detail), spending: costs.taskSpending(detail) };
     return { task, planning: planning.isActive(id), executing: execution.isActive(id) };
   };
 
@@ -332,6 +336,16 @@ export function createApp(deps: AppDeps) {
     if (!provider) throw new HttpError(404, 'config', 'El proveedor no existe.', 'Elige un proveedor de la lista.');
     repo.giveConsent(provider.id);
     return c.json({ consentGiven: true });
+  });
+
+  // ---- Política de costes ----
+  api.get('/settings/costs', (c) =>
+    c.json({ settings: costs.settings(), spending: { today: costs.today(), month: costs.month() } }),
+  );
+
+  api.put('/settings/costs', async (c) => {
+    costs.saveSettings(await parseJson(c, costSettingsSchema));
+    return c.json({ settings: costs.settings(), spending: { today: costs.today(), month: costs.month() } });
   });
 
   // ---- Ajustes (no secretos) ----

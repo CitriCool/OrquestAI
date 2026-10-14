@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import type { ModelInfo, ProviderStatus } from '../../shared/schemas.js';
 import { api, ApiError } from '../api.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
-import { costLabel, errorKindLabel, formatTime } from '../format.js';
+import { costLabel, errorKindLabel, formatTime, priceLabel } from '../format.js';
 
 export function ProvidersPage() {
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
@@ -127,6 +127,7 @@ function ProviderCard({ provider: p, onChanged }: { provider: ProviderStatus; on
                     </td>
                     <td>
                       <span class={`badge ${m.costClass === 'free' ? 'ok' : 'warn'}`}>{costLabel(m.costClass)}</span>
+                      {priceLabel(m) && <div class="small">{priceLabel(m)}</div>}
                       {m.restriction && (
                         <span class="badge danger" title={m.restriction}>
                           No disponible aquí

@@ -11,7 +11,9 @@ import type {
   TaskDetail,
   UpdateAgentInput,
 } from '../shared/schemas.js';
-import type { ComplexityLevel, ReviewLevel } from '../shared/schemas.js';
+import type { ComplexityLevel, CostMode, CostSettings, ReviewLevel, Spending } from '../shared/schemas.js';
+
+export type CostsInfo = { settings: CostSettings; spending: { today: Spending; month: Spending } };
 
 /** Datos editables de un agente nuevo (los valores por omisión los completa el servidor). */
 export type NewAgent = UpdateAgentInput & { name: string; instructions: string; role?: 'specialist' | 'custom' };
@@ -96,10 +98,15 @@ export const api = {
     acceptanceCriteria: string;
     reviewLevel: ReviewLevel;
     complexityOverride: ComplexityLevel | null;
+    costMode: CostMode | null;
+    budgetUsd: number | null;
   }) => json<{ task: Task }>('POST', '/tasks', input).then((r) => r.task),
   getTask: (id: string) =>
     json<{ task: TaskDetail; planning: boolean; executing: boolean }>('GET', `/tasks/${encodeURIComponent(id)}`),
-  updateTask: (id: string, input: { title?: string; complexityOverride?: ComplexityLevel | null }) =>
+  updateTask: (
+    id: string,
+    input: { title?: string; complexityOverride?: ComplexityLevel | null; costMode?: CostMode | null; budgetUsd?: number | null },
+  ) =>
     json<{ task: TaskDetail }>('PATCH', `/tasks/${encodeURIComponent(id)}`, input),
   planTask: (id: string, input: { providerId: string; modelId: string; feedback?: string }) =>
     json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/plan`, input),
@@ -115,6 +122,8 @@ export const api = {
   listModels: (providerId: string) =>
     json<{ models: ModelInfo[] }>('GET', `/providers/${encodeURIComponent(providerId)}/models`).then((r) => r.models),
   giveConsent: (providerId: string) => json('POST', `/providers/${encodeURIComponent(providerId)}/consent`, { accepted: true }),
+  getCosts: () => json<CostsInfo>('GET', '/settings/costs'),
+  saveCosts: (settings: CostSettings) => json<CostsInfo>('PUT', '/settings/costs', settings),
   getSettings: () => json<{ defaultProviderId: string; defaultModelId: string }>('GET', '/settings'),
   saveSettings: (s: { defaultProviderId: string; defaultModelId: string }) => json('PUT', '/settings', s),
   deleteAllData: () => json('DELETE', '/data', { confirm: 'BORRAR' }),

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { formatUsd } from '../../shared/pricing.js';
 import type {
   Agent,
   ComplexityLevel,
+  CostMode,
   Plan,
   PlanContent,
   ProviderStatus,
@@ -17,6 +19,7 @@ import { ErrorBanner } from '../components/ErrorBanner.js';
 import { ModelPicker } from '../components/ModelPicker.js';
 import {
   complexityLabel,
+  costModeLabel,
   errorKindLabel,
   formatTime,
   planStatusLabel,
@@ -108,6 +111,8 @@ function NewTaskForm({ onCreated }: { onCreated: (t: Task) => void }) {
   const [criteria, setCriteria] = useState('');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('standard');
   const [complexity, setComplexity] = useState<ComplexityLevel | null>(null);
+  const [costMode, setCostMode] = useState<CostMode | null>(null);
+  const [budget, setBudget] = useState('');
   const [error, setError] = useState<ApiError | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -122,6 +127,8 @@ function NewTaskForm({ onCreated }: { onCreated: (t: Task) => void }) {
           acceptanceCriteria: criteria,
           reviewLevel,
           complexityOverride: complexity,
+          costMode,
+          budgetUsd: budget.trim() === '' ? null : Number(budget),
         }),
       );
     } catch (e) {
@@ -180,6 +187,21 @@ function NewTaskForm({ onCreated }: { onCreated: (t: Task) => void }) {
           Complejidad
           <ComplexitySelect value={complexity} onChange={setComplexity} />
         </label>
+        <label>
+          Modo de coste
+          <CostModeSelect value={costMode} onChange={setCostMode} />
+        </label>
+        <label>
+          Presupuesto de la tarea (USD)
+          <input
+            type="number"
+            min={0}
+            step={0.01}
+            placeholder="El de Ajustes"
+            value={budget}
+            onInput={(e) => setBudget((e.target as HTMLInputElement).value)}
+          />
+        </label>
       </div>
       {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
       <div class="row">
@@ -188,6 +210,72 @@ function NewTaskForm({ onCreated }: { onCreated: (t: Task) => void }) {
         </button>
       </div>
     </article>
+  );
+}
+
+function CostModeSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: CostMode | null;
+  onChange: (v: CostMode | null) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <select
+      value={value ?? ''}
+      disabled={disabled}
+      aria-label="Modo de coste de la tarea"
+      onChange={(e) => onChange(((e.target as HTMLSelectElement).value || null) as CostMode | null)}
+    >
+      <option value="">El de Ajustes</option>
+      {(['free', 'economic', 'manual'] as const).map((m) => (
+        <option key={m} value={m}>
+          {costModeLabel(m)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** Modo y presupuesto de la tarea, con lo gastado. */
+function TaskCosts({ task, locked, onChange }: { task: TaskDetail; locked: boolean; onChange: (v: { costMode?: CostMode | null; budgetUsd?: number | null }) => void }) {
+  const [budget, setBudget] = useState(task.budgetUsd?.toString() ?? '');
+  const s = task.spending;
+  return (
+    <section class="task-costs">
+      <div class="row">
+        <label class="inline">
+          Modo de coste
+          <CostModeSelect value={task.costMode} disabled={locked} onChange={(v) => onChange({ costMode: v })} />
+        </label>
+        <span class="muted small">→ se aplica {costModeLabel(task.effectiveCostMode)}</span>
+      </div>
+      <div class="row">
+        <label class="inline">
+          Presupuesto (USD)
+          <input
+            type="number"
+            min={0}
+            step={0.01}
+            placeholder="El de Ajustes"
+            value={budget}
+            disabled={locked}
+            onInput={(e) => setBudget((e.target as HTMLInputElement).value)}
+            onBlur={() => {
+              const v = budget.trim() === '' ? null : Number(budget);
+              if (v !== task.budgetUsd) onChange({ budgetUsd: v });
+            }}
+          />
+        </label>
+        <span class="small">
+          Gastado {formatUsd(s.spentUsd)} de {formatUsd(s.budgetUsd)}
+          {s.estimatedUsd > 0 && ` (${formatUsd(s.estimatedUsd)} estimado)`}
+        </span>
+        {s.unknownCalls > 0 && <span class="badge warn">{s.unknownCalls} llamada(s) de coste desconocido</span>}
+      </div>
+    </section>
   );
 }
 
@@ -336,6 +424,13 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
           <dd>{formatTime(task.createdAt)}</dd>
         </dl>
       </details>
+
+      <TaskCosts
+        key={`${task.costMode}-${task.budgetUsd}`}
+        task={task}
+        locked={busy || closed}
+        onChange={(v) => act(() => api.updateTask(taskId, v))}
+      />
 
       {task.errorMessage && (
         <ErrorBanner

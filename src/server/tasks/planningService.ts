@@ -1,7 +1,8 @@
 import type { Agent, Plan, PlanTaskInput, Task } from '../../shared/schemas.js';
 import { systemPrompt } from '../chat/chatService.js';
 import { HttpError } from '../http.js';
-import { assertModelAllowed, requireUsableProvider } from '../policies/modelPolicy.js';
+import type { CostPolicy } from '../policies/costPolicy.js';
+import { requireUsableProvider } from '../policies/modelPolicy.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { ProviderError, type ChatTurn, type ProviderAdapter } from '../providers/types.js';
 import { log } from '../security/redact.js';
@@ -59,6 +60,7 @@ export class PlanningService {
     private readonly tasks: TaskRepository,
     private readonly providers: ProviderRegistry,
     private readonly timeoutMs: number,
+    private readonly costs: CostPolicy,
   ) {}
 
   isActive(taskId: string): boolean {
@@ -93,7 +95,7 @@ export class PlanningService {
     const controller = new AbortController();
     this.active.set(taskId, controller);
     try {
-      await assertModelAllowed(provider, input.modelId);
+      this.costs.checkModel(await this.costs.resolveModel(provider, input.modelId), this.costs.modeFor(task));
     } catch (err) {
       this.active.delete(taskId);
       throw err;
@@ -166,6 +168,7 @@ export class PlanningService {
             signal: controller.signal,
             // También las llamadas fallidas quedan asociadas a esta planificación.
             onStart: (run) => runIds.push(run.id),
+            cost: { policy: this.costs, mode: this.costs.modeFor(task), task },
           },
         );
         raw = response.text;

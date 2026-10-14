@@ -12,7 +12,8 @@ import {
 } from '../../shared/schemas.js';
 import { systemPrompt } from '../chat/chatService.js';
 import { HttpError } from '../http.js';
-import { assertModelAllowed, requireUsableProvider } from '../policies/modelPolicy.js';
+import { BudgetError, type CostPolicy } from '../policies/costPolicy.js';
+import { requireUsableProvider } from '../policies/modelPolicy.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { ProviderError, type ChatTurn, type ProviderAdapter } from '../providers/types.js';
 import { log } from '../security/redact.js';
@@ -94,6 +95,7 @@ export class ExecutionService {
     private readonly tasks: TaskRepository,
     private readonly providers: ProviderRegistry,
     private readonly timeoutMs: number,
+    private readonly costs: CostPolicy,
   ) {}
 
   isActive(taskId: string): boolean {
@@ -151,7 +153,11 @@ export class ExecutionService {
     const controller = new AbortController();
     this.active.set(taskId, controller);
     try {
-      for (const [key, provider] of models) await assertModelAllowed(provider, key.split('\n')[1]!);
+      // El modo de coste de la tarea debe permitir cada modelo; los presupuestos se comprueban en cada llamada.
+      const mode = this.costs.modeFor(task);
+      for (const [key, provider] of models) {
+        this.costs.checkModel(await this.costs.resolveModel(provider, key.split('\n')[1]!), mode);
+      }
     } catch (err) {
       this.active.delete(taskId);
       throw err;
@@ -192,6 +198,7 @@ export class ExecutionService {
     const order = executionOrder(content);
     const byId = new Map(content.subtasks.map((st) => [st.id, st]));
     const outputs = new Map<string, string>();
+    let review: ReviewContent | null = null;
 
     try {
       // Etapa 3: subtareas en orden de dependencias. Se guarda cada resultado antes de seguir.
@@ -201,7 +208,6 @@ export class ExecutionService {
       }
 
       // Etapas 4 y 5: revisión y, si hace falta, corrección por rondas.
-      let review: ReviewContent | null = null;
       if (s.task.reviewLevel !== 'none' && outputs.size === order.length) {
         let previousProblems: string | null = null;
         for (let round = 1; round <= s.limits.maxRounds; round++) {
@@ -262,6 +268,17 @@ export class ExecutionService {
     } catch (err) {
       const e = err instanceof ProviderError ? err : null;
       if (!this.tasks.getTask(s.task.id)) return; // la tarea se eliminó durante la ejecución
+      if (err instanceof BudgetError) {
+        // Presupuesto agotado: se guarda lo obtenido y se termina de forma controlada.
+        const missing = order.filter((id) => !outputs.has(id));
+        this.tasks.setTaskResult(s.task.id, {
+          status: 'completed',
+          result: composeResult(content, outputs, review, missing),
+          outcome: 'partial',
+          limitations: [...s.limitations, `Se detuvo por la política de costes: ${err.message}`],
+        });
+        return;
+      }
       if (e?.kind === 'cancelled') {
         if (this.tasks.getTask(s.task.id)?.status === 'running') {
           this.tasks.setTaskStatus(s.task.id, 'interrupted', { kind: 'cancelled', message: 'La ejecución se detuvo a petición tuya.' });
@@ -332,6 +349,7 @@ export class ExecutionService {
         temperature: agent.temperature ?? undefined,
         responseFormat: opts.json ? 'json' : 'text',
         signal: s.controller.signal,
+        cost: { policy: this.costs, mode: this.costs.modeFor(s.task), task: s.task },
       },
     );
   }

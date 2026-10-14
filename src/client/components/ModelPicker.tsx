@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import type { ModelInfo, ProviderStatus } from '../../shared/schemas.js';
 import { api, ApiError } from '../api.js';
-import { costLabel } from '../format.js';
+import { costLabel, priceLabel } from '../format.js';
 
 interface Props {
   providers: ProviderStatus[];
@@ -81,7 +81,7 @@ export function ModelPicker({ providers, providerId, modelId, disabled, onChange
           {!loading &&
             visible.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.name} · {costLabel(m.costClass)}
+                {m.name} · {priceLabel(m) ?? costLabel(m.costClass)}
               </option>
             ))}
         </select>
@@ -91,7 +91,11 @@ export function ModelPicker({ providers, providerId, modelId, disabled, onChange
         Solo gratuitos
       </label>
       {selected && selected.costClass !== 'free' && (
-        <span class="badge warn">Este modelo no es gratuito: esta versión no lo permite.</span>
+        <span class="badge warn">
+          {selected.costClass === 'unknown'
+            ? 'Coste desconocido: solo se permite en modo manual si lo autorizas en Ajustes.'
+            : 'Modelo de pago: el servidor lo permite según tu modo de coste y tus presupuestos.'}
+        </span>
       )}
       {error && <span class="badge danger">{error}</span>}
     </div>

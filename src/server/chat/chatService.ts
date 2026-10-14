@@ -1,6 +1,7 @@
 import type { Agent, ChatEvent, Message, SendMessageInput } from '../../shared/schemas.js';
 import { HttpError } from '../http.js';
-import { assertModelAllowed, requireUsableProvider } from '../policies/modelPolicy.js';
+import { BudgetError, type CostPolicy, type Reservation } from '../policies/costPolicy.js';
+import { requireUsableProvider } from '../policies/modelPolicy.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { ProviderError, type ChatTurn, type ProviderAdapter } from '../providers/types.js';
 import { log } from '../security/redact.js';
@@ -15,6 +16,8 @@ const CONTEXT_MAX_MESSAGES = 20;
 const CONTEXT_MAX_CHARS = 24_000;
 const DEFAULT_TITLE = 'Nueva conversación';
 const PERSIST_EVERY_MS = 1_000;
+/** Tope de salida por respuesta: acota el coste máximo estimado de cada llamada. */
+export const CHAT_MAX_OUTPUT_TOKENS = 8_000;
 
 export interface ChatRun {
   start(emit: (event: ChatEvent) => void): Promise<void>;
@@ -27,6 +30,7 @@ export class ChatService {
     private readonly repo: Repository,
     private readonly providers: ProviderRegistry,
     private readonly timeoutMs: number,
+    private readonly costs: CostPolicy,
   ) {}
 
   isActive(conversationId: string): boolean {
@@ -57,15 +61,40 @@ export class ChatService {
     // Reserva antes de cualquier espera para que una segunda petición simultánea se rechace.
     const controller = new AbortController();
     this.active.set(conversationId, controller);
+    const maxOutputTokens = agent?.maxOutputTokens ?? CHAT_MAX_OUTPUT_TOKENS;
+    let reservation: Reservation;
     try {
-      await assertModelAllowed(provider, input.modelId);
+      // La política de costes se comprueba antes de abrir el stream, con el contexto que se enviará.
+      const pending: Message = {
+        id: '',
+        conversationId,
+        role: 'user',
+        content: input.content,
+        providerId: null,
+        modelId: null,
+        status: 'complete',
+        errorKind: null,
+        errorMessage: null,
+        usage: null,
+        agentId: null,
+        createdAt: '',
+      };
+      reservation = await this.costs.reserve({
+        provider,
+        modelId: input.modelId,
+        messages: buildContext([...this.repo.listMessages(conversationId), pending], agent),
+        maxOutputTokens,
+        mode: this.costs.modeFor(null),
+      });
     } catch (err) {
       this.active.delete(conversationId);
+      if (err instanceof BudgetError) throw new HttpError(403, 'policy', err.message, err.action);
       throw err;
     }
 
     return {
-      start: (emit) => this.run(conversationId, conversation.title, input, provider, agent, controller, emit),
+      start: (emit) =>
+        this.run(conversationId, conversation.title, input, provider, agent, controller, emit, reservation, maxOutputTokens),
     };
   }
 
@@ -85,6 +114,8 @@ export class ChatService {
     agent: Agent | null,
     controller: AbortController,
     emit: (event: ChatEvent) => void,
+    reservation: Reservation,
+    maxOutputTokens: number,
   ): Promise<void> {
     const safeEmit = (event: ChatEvent) => {
       try {
@@ -124,7 +155,7 @@ export class ChatService {
         const response = await provider.generateResponse({
           modelId: input.modelId,
           messages: buildContext([...history, userMessage], agent),
-          maxOutputTokens: agent?.maxOutputTokens ?? undefined,
+          maxOutputTokens,
           temperature: agent?.temperature ?? undefined,
           signal: controller.signal,
           timeoutMs: this.timeoutMs,
@@ -141,7 +172,7 @@ export class ChatService {
         const final = this.repo.finishMessage(assistant.id, {
           content: response.text || text,
           status: 'complete',
-          usage: provider.getReportedUsage(response),
+          usage: this.costs.settle(reservation, provider.getReportedUsage(response)),
         });
         this.repo.recordObservation(provider.id, { ok: true });
         safeEmit({ type: 'assistant_end', message: final });
@@ -170,6 +201,7 @@ export class ChatService {
         action: 'Revisa el registro del servidor.',
       });
     } finally {
+      this.costs.release(reservation);
       this.active.delete(conversationId);
     }
   }

@@ -1,4 +1,5 @@
 import type { ModelInfo, Usage } from '../../shared/schemas.js';
+import { classifyPricing, estimateCallCost, type ModelPricing } from '../../shared/pricing.js';
 import { classifyHttpError, classifyThrown, providerError } from './errors.js';
 import type {
   CostEstimate,
@@ -39,11 +40,36 @@ export interface OpenAICompatibleOptions {
   modelCacheMs?: number;
 }
 
+interface ListedPrices {
+  prompt?: unknown;
+  completion?: unknown;
+  request?: unknown;
+}
+
 interface ListedModel {
   id?: unknown;
   name?: unknown;
   context_length?: unknown;
-  pricing?: { prompt?: unknown; completion?: unknown };
+  pricing?: ListedPrices & { overrides?: ListedPrices[] };
+}
+
+/**
+ * Precio a partir del listado (USD por token, como texto). Si hay precios
+ * condicionales (overrides, p. ej. contexto largo), se toma el mayor de cada
+ * campo para que la estimación nunca quede por debajo.
+ */
+function parsePricing(raw: ListedModel['pricing']): ModelPricing | null {
+  if (!raw) return null;
+  const num = (v: unknown) => (v === undefined || v === null || v === '' ? 0 : Number(v));
+  const base = { prompt: Number(raw.prompt), completion: Number(raw.completion), request: num(raw.request) };
+  if (![base.prompt, base.completion, base.request].every((n) => Number.isFinite(n) && n >= 0)) return null;
+  for (const o of Array.isArray(raw.overrides) ? raw.overrides : []) {
+    for (const key of ['prompt', 'completion', 'request'] as const) {
+      const n = num(o?.[key]);
+      if (Number.isFinite(n) && n > base[key]) base[key] = n;
+    }
+  }
+  return base;
 }
 
 /**
@@ -84,13 +110,10 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): P
     }
     let costClass: ModelInfo['costClass'] = 'unknown';
     let costSource = 'El proveedor no informa el precio en su listado.';
-    if (opts.pricingFromModelList && m.pricing) {
-      const prompt = Number(m.pricing.prompt);
-      const completion = Number(m.pricing.completion);
-      if (Number.isFinite(prompt) && Number.isFinite(completion)) {
-        costClass = prompt === 0 && completion === 0 ? 'free' : 'standard';
-        costSource = 'Precio informado por el listado de modelos del proveedor.';
-      }
+    const pricing = opts.pricingFromModelList ? parsePricing(m.pricing) : null;
+    if (pricing) {
+      costClass = classifyPricing(pricing);
+      costSource = 'Precio informado por el listado de modelos del proveedor (USD por token).';
     }
     return {
       id: m.id,
@@ -99,6 +122,7 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): P
       costSource,
       contextLength: typeof m.context_length === 'number' && m.context_length > 0 ? m.context_length : null,
       verifiedAt,
+      pricing,
     };
   }
 
@@ -240,9 +264,9 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): P
     },
     async estimateCost(request): Promise<CostEstimate> {
       const model = await findModel(request.modelId).catch(() => null);
-      if (model?.costClass === 'free') return { cost: 0, kind: 'estimated' };
-      // Los precios por token se incorporan en la Fase 3.
-      return { cost: null, kind: 'unknown' };
+      if (!model?.pricing || !request.maxOutputTokens) return { cost: null, kind: 'unknown' };
+      const chars = request.messages.reduce((n, m) => n + m.content.length, 0);
+      return { cost: estimateCallCost(model.pricing, chars, request.maxOutputTokens), kind: 'estimated' };
     },
     getReportedUsage,
     listModels,

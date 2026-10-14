@@ -1,4 +1,5 @@
 import type { ModelInfo, Usage } from '../../shared/schemas.js';
+import { classifyPricing, type ModelPricing } from '../../shared/pricing.js';
 import { classifyThrown, providerError } from './errors.js';
 import type { GenerateRequest, GenerateResponse, ProviderAdapter } from './types.js';
 
@@ -19,7 +20,24 @@ import type { GenerateRequest, GenerateResponse, ProviderAdapter } from './types
  *   /revision menor     → la revisión pide cambios con una observación de gravedad media
  *   /ejecucion error    → las subtareas fallan con un error del proveedor
  *   /ejecucion lenta    → las subtareas responden lento (para probar Detener)
+ * Modelos de pago simulados (no cuestan dinero real) para probar presupuestos:
+ * el coste se calcula con su precio y se reporta, salvo con /sin coste en el
+ * mensaje, que simula un proveedor que no informa el coste.
  */
+function paidMock(id: string, name: string, pricing: ModelPricing): ModelInfo {
+  return {
+    id,
+    name,
+    costClass: classifyPricing(pricing),
+    costSource: 'Precio ficticio del proveedor simulado: no se cobra nada real.',
+    contextLength: 32_000,
+    verifiedAt: null,
+    pricing,
+  };
+}
+
+const PER_TOKEN = 1 / 1_000_000;
+
 export const MOCK_MODELS: ModelInfo[] = [
   {
     id: 'simulado-basico',
@@ -28,6 +46,19 @@ export const MOCK_MODELS: ModelInfo[] = [
     costSource: 'Proveedor local sin coste.',
     contextLength: 32_000,
     verifiedAt: null,
+    pricing: { prompt: 0, completion: 0, request: 0 },
+  },
+  paidMock('simulado-economico', 'Simulado económico (precio ficticio)', { prompt: 0.5 * PER_TOKEN, completion: 1.5 * PER_TOKEN, request: 0 }),
+  paidMock('simulado-pago', 'Simulado de pago (precio ficticio)', { prompt: 3 * PER_TOKEN, completion: 10 * PER_TOKEN, request: 0 }),
+  paidMock('simulado-premium', 'Simulado premium (precio ficticio)', { prompt: 15 * PER_TOKEN, completion: 60 * PER_TOKEN, request: 0 }),
+  {
+    id: 'simulado-sin-precio',
+    name: 'Simulado sin precio',
+    costClass: 'unknown',
+    costSource: 'Proveedor simulado: precio no publicado.',
+    contextLength: 32_000,
+    verifiedAt: null,
+    pricing: null,
   },
 ];
 
@@ -79,7 +110,7 @@ export function createMockProvider(opts: { delayMs?: number; slowDelayMs?: numbe
       }
       if (delayMs > 0) await sleep(delayMs, req.signal).catch(() => undefined);
       if (req.signal.aborted) throw classifyThrown(new DOMException('Cancelado', 'AbortError'), { userAborted: true, timedOut: false });
-      return { text, finishReason: 'stop', rawUsage: { prompt_tokens: Math.ceil(all.length / 4), completion_tokens: 120, cost: 0 } };
+      return { text, finishReason: 'stop', rawUsage: mockUsage(req.modelId, Math.ceil(all.length / 4), 120, all) };
     }
 
     const slow = command === '/lento' || all.includes('/ejecucion lenta');
@@ -105,7 +136,7 @@ export function createMockProvider(opts: { delayMs?: number; slowDelayMs?: numbe
     return {
       text: out,
       finishReason: 'stop',
-      rawUsage: { prompt_tokens: Math.ceil(last.length / 4), completion_tokens: words.length, cost: 0 },
+      rawUsage: mockUsage(req.modelId, Math.ceil(last.length / 4), words.length, all),
     };
   }
 
@@ -123,16 +154,28 @@ export function createMockProvider(opts: { delayMs?: number; slowDelayMs?: numbe
     supportsStructuredOutput: async () => 'unsupported',
     estimateCost: async () => ({ cost: 0, kind: 'estimated' }),
     getReportedUsage(response): Usage {
-      const u = response.rawUsage as { prompt_tokens: number; completion_tokens: number } | null;
+      const u = response.rawUsage as { prompt_tokens: number; completion_tokens: number; cost?: number } | null;
+      const cost = typeof u?.cost === 'number' ? u.cost : null;
       return {
         promptTokens: u?.prompt_tokens ?? null,
         completionTokens: u?.completion_tokens ?? null,
-        cost: 0,
-        costKind: 'reported',
+        cost,
+        costKind: cost === null ? 'unknown' : 'reported',
       };
     },
     listModels: async () => MOCK_MODELS,
   };
+}
+
+/** Uso simulado: el coste se calcula con el precio ficticio del modelo. */
+function mockUsage(modelId: string, promptTokens: number, completionTokens: number, all: string) {
+  const p = MOCK_MODELS.find((m) => m.id === modelId)?.pricing;
+  const usage: { prompt_tokens: number; completion_tokens: number; cost?: number } = {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+  };
+  if (p && !all.includes('/sin coste')) usage.cost = p.prompt * promptTokens + p.completion * completionTokens + p.request;
+  return usage;
 }
 
 /** Revisión de ejemplo según los comandos del objetivo de la tarea. */

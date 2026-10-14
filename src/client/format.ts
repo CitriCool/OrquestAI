@@ -1,6 +1,9 @@
+import { formatUsd, perMillion } from '../shared/pricing.js';
 import type {
   ComplexityLevel,
   CostClass,
+  CostMode,
+  ModelInfo,
   ErrorKind,
   Message,
   PlanStatus,
@@ -49,7 +52,21 @@ export function usageLabel(u: Usage | null): string | null {
     parts.push(`${u.promptTokens ?? '?'} → ${u.completionTokens ?? '?'} tokens`);
   }
   if (u.costKind === 'unknown' || u.cost === null) parts.push('coste desconocido');
-  else parts.push(`${u.costKind === 'reported' ? 'coste reportado' : 'coste estimado'}: ${u.cost.toFixed(6)} (unidad informada por el proveedor)`);
+  else if (u.costKind === 'reported') parts.push(`coste reportado: ${u.cost === 0 ? '0' : u.cost.toFixed(6)} (créditos del proveedor)`);
+  else parts.push(`coste estimado: ${formatUsd(u.cost)}`);
+  return parts.join(' · ');
+}
+
+export function costModeLabel(m: CostMode): string {
+  return { free: 'A · exclusivamente gratuito', economic: 'B · económico', manual: 'C · control manual' }[m];
+}
+
+/** Precio por millón de tokens de entrada y de salida, o null si es gratuito o desconocido. */
+export function priceLabel(m: Pick<ModelInfo, 'pricing' | 'costClass'>): string | null {
+  if (!m.pricing || m.costClass === 'free') return null;
+  const f = (n: number) => (n >= 1 ? n.toFixed(2) : n.toPrecision(2));
+  const parts = [`USD ${f(perMillion(m.pricing.prompt))}/M entrada · ${f(perMillion(m.pricing.completion))}/M salida`];
+  if (m.pricing.request > 0) parts.push(`${formatUsd(m.pricing.request)} por solicitud`);
   return parts.join(' · ');
 }
 

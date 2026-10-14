@@ -224,4 +224,15 @@ export const migrations: Migration[] = [
       CREATE INDEX idx_task_runs_execution ON task_runs(task_id, execution);
     `,
   },
+  {
+    version: 5,
+    name: 'costes_por_tarea',
+    sql: `
+      ALTER TABLE tasks ADD COLUMN cost_mode TEXT CHECK (cost_mode IN ('free', 'economic', 'manual'));
+      ALTER TABLE tasks ADD COLUMN budget_usd REAL CHECK (budget_usd >= 0);
+      -- Para sumar el gasto por periodo.
+      CREATE INDEX idx_messages_created ON messages(created_at);
+      CREATE INDEX idx_task_runs_started ON task_runs(started_at);
+    `,
+  },
 ];

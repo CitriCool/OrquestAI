@@ -191,6 +191,11 @@ export const modelInfoSchema = z.object({
   verifiedAt: z.string().nullable(),
   /** Si existe, el modelo no se puede usar desde esta aplicación y el motivo se muestra al usuario. */
   restriction: z.string().nullable().optional(),
+  /** Precios en USD por token y por solicitud, si el proveedor los publica. */
+  pricing: z
+    .object({ prompt: z.number().nonnegative(), completion: z.number().nonnegative(), request: z.number().nonnegative() })
+    .nullable()
+    .optional(),
 });
 export type ModelInfo = z.infer<typeof modelInfoSchema>;
 
@@ -222,6 +227,47 @@ export const chatEventSchema = z.discriminatedUnion('type', [
   }),
 ]);
 export type ChatEvent = z.infer<typeof chatEventSchema>;
+
+// ---- Política de costes (Fase 3) ----
+
+/**
+ * Modos de coste del prompt maestro: A = exclusivamente gratuito,
+ * B = económico, C = control manual.
+ */
+export const costModeSchema = z.enum(['free', 'economic', 'manual']);
+export type CostMode = z.infer<typeof costModeSchema>;
+
+const usd = z.number().min(0).max(10_000);
+
+export const costSettingsSchema = z.object({
+  mode: costModeSchema,
+  /** Presupuesto por tarea si la tarea no fija el suyo. */
+  taskBudgetUsd: usd,
+  dailyBudgetUsd: usd,
+  monthlyBudgetUsd: usd,
+  /** Solo en modo manual: permitir modelos sin precio verificable (su gasto no se puede controlar). */
+  allowUnknownCostInManual: z.boolean(),
+});
+export type CostSettings = z.infer<typeof costSettingsSchema>;
+
+export const DEFAULT_COST_SETTINGS: CostSettings = {
+  mode: 'free',
+  taskBudgetUsd: 0.5,
+  dailyBudgetUsd: 1,
+  monthlyBudgetUsd: 10,
+  allowUnknownCostInManual: false,
+};
+
+export const spendingSchema = z.object({
+  /** Suma de costes reportados y estimados; los desconocidos no se pueden sumar. */
+  spentUsd: z.number(),
+  /** Parte de spentUsd que es estimación (el proveedor no informó el coste). */
+  estimatedUsd: z.number(),
+  /** Llamadas de pago o sin precio cuyo coste se desconoce. */
+  unknownCalls: z.number().int(),
+  budgetUsd: z.number(),
+});
+export type Spending = z.infer<typeof spendingSchema>;
 
 // ---- Tareas y planes (Fase 2) ----
 
@@ -403,6 +449,10 @@ export const taskSchema = z.object({
   outcome: z.enum(['complete', 'partial']).nullable(),
   /** Motivos por los que el resultado es parcial. */
   limitations: z.array(z.string()),
+  /** Modo de coste propio de la tarea; null = el de Ajustes. */
+  costMode: costModeSchema.nullable(),
+  /** Presupuesto propio de la tarea; null = el de Ajustes. */
+  budgetUsd: z.number().nonnegative().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -411,6 +461,9 @@ export type Task = z.infer<typeof taskSchema>;
 export const taskDetailSchema = taskSchema.extend({
   plans: z.array(planSchema),
   runs: z.array(taskRunSchema),
+  /** Modo y presupuesto que se aplican de verdad, y lo gastado por la tarea. */
+  effectiveCostMode: costModeSchema,
+  spending: spendingSchema,
 });
 export type TaskDetail = z.infer<typeof taskDetailSchema>;
 
@@ -421,6 +474,8 @@ export const createTaskInput = z.object({
   acceptanceCriteria: z.string().trim().max(LIMITS.taskCriteriaMax).default(''),
   reviewLevel: reviewLevelSchema.default('standard'),
   complexityOverride: complexityLevelSchema.nullable().default(null),
+  costMode: costModeSchema.nullable().default(null),
+  budgetUsd: usd.nullable().default(null),
 });
 export type CreateTaskInput = z.infer<typeof createTaskInput>;
 
@@ -443,9 +498,11 @@ export const updateTaskInput = z
   .object({
     title: z.string().trim().min(1).max(LIMITS.titleMax).optional(),
     complexityOverride: complexityLevelSchema.nullable().optional(),
+    costMode: costModeSchema.nullable().optional(),
+    budgetUsd: usd.nullable().optional(),
   })
-  .refine((v) => v.title !== undefined || v.complexityOverride !== undefined, {
-    message: 'Indica title o complexityOverride.',
+  .refine((v) => Object.values(v).some((x) => x !== undefined), {
+    message: 'Indica al menos un campo.',
   });
 
 export const apiErrorSchema = z.object({
