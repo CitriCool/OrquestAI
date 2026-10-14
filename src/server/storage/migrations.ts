@@ -60,4 +60,34 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    name: 'agentes',
+    sql: `
+      CREATE TABLE agents (
+        id                    TEXT PRIMARY KEY,
+        name                  TEXT NOT NULL,
+        description           TEXT NOT NULL DEFAULT '',
+        role                  TEXT NOT NULL CHECK (role IN ('coordinator', 'developer', 'architect', 'reviewer',
+                                'specialist', 'tutor', 'synthesizer', 'custom')),
+        instructions          TEXT NOT NULL,
+        specialty             TEXT,
+        provider_id           TEXT,
+        model_id              TEXT,
+        fallback_provider_id  TEXT,
+        fallback_model_id     TEXT,
+        max_output_tokens     INTEGER,
+        temperature           REAL,
+        enabled               INTEGER NOT NULL DEFAULT 1,
+        builtin               INTEGER NOT NULL DEFAULT 0,
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL
+      );
+
+      -- Agente de la conversación (null = asistente general) y agente que generó cada respuesta.
+      ALTER TABLE conversations ADD COLUMN agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+      ALTER TABLE messages ADD COLUMN agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+      CREATE INDEX idx_messages_agent ON messages(agent_id);
+    `,
+  },
 ];

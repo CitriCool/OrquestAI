@@ -51,6 +51,8 @@ export const messageSchema = z.object({
   errorKind: errorKindSchema.nullable(),
   errorMessage: z.string().nullable(),
   usage: usageSchema.nullable(),
+  /** Agente que respondió (solo en mensajes del asistente). */
+  agentId: z.string().nullable(),
   createdAt: z.string(),
 });
 export type Message = z.infer<typeof messageSchema>;
@@ -58,6 +60,8 @@ export type Message = z.infer<typeof messageSchema>;
 export const conversationSchema = z.object({
   id: idSchema,
   title: z.string(),
+  /** Agente con el que se conversa; null = asistente general. */
+  agentId: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -72,11 +76,15 @@ export type ConversationDetail = z.infer<typeof conversationDetailSchema>;
 
 export const createConversationInput = z.object({
   title: z.string().trim().min(1).max(LIMITS.titleMax).optional(),
+  agentId: idSchema.nullable().optional(),
 });
 
-export const updateConversationInput = z.object({
-  title: z.string().trim().min(1).max(LIMITS.titleMax),
-});
+export const updateConversationInput = z
+  .object({
+    title: z.string().trim().min(1).max(LIMITS.titleMax).optional(),
+    agentId: idSchema.nullable().optional(),
+  })
+  .refine((v) => v.title !== undefined || v.agentId !== undefined, { message: 'Indica title o agentId.' });
 
 export const sendMessageInput = z.object({
   content: z.string().trim().min(1).max(LIMITS.messageMax),
@@ -86,6 +94,90 @@ export const sendMessageInput = z.object({
 export type SendMessageInput = z.infer<typeof sendMessageInput>;
 
 export const consentInput = z.object({ accepted: z.literal(true) });
+
+// ---- Agentes ----
+
+export const agentRoleSchema = z.enum([
+  'coordinator',
+  'developer',
+  'architect',
+  'reviewer',
+  'specialist',
+  'tutor',
+  'synthesizer',
+  'custom',
+]);
+export type AgentRole = z.infer<typeof agentRoleSchema>;
+
+export const agentSchema = z.object({
+  /** Identificador estable: no cambia al renombrar el agente. */
+  id: idSchema,
+  name: z.string(),
+  description: z.string(),
+  role: agentRoleSchema,
+  /** Instrucciones del agente; se envían separadas de los datos de la tarea. */
+  instructions: z.string(),
+  specialty: z.string().nullable(),
+  /** Modelo preferido; null = el predeterminado de la aplicación. */
+  providerId: z.string().nullable(),
+  modelId: z.string().nullable(),
+  /** Respaldo opcional. Se guarda ahora y se usa en la Fase 4 (transferencia y recuperación). */
+  fallbackProviderId: z.string().nullable(),
+  fallbackModelId: z.string().nullable(),
+  maxOutputTokens: z.number().int().positive().nullable(),
+  temperature: z.number().min(0).max(2).nullable(),
+  enabled: z.boolean(),
+  /** Agente inicial de la aplicación: se puede editar y restaurar, pero no eliminar. */
+  builtin: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  /** Historial de ejecuciones: respuestas generadas por este agente. */
+  runs: z.number().int().nonnegative(),
+  lastRunAt: z.string().nullable(),
+});
+export type Agent = z.infer<typeof agentSchema>;
+
+const nullableText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .nullable()
+    .transform((v) => (v ? v : null));
+
+const agentFields = {
+  name: z.string().trim().min(1).max(LIMITS.agentNameMax),
+  description: z.string().trim().max(LIMITS.agentDescriptionMax),
+  instructions: z.string().trim().min(1).max(LIMITS.agentInstructionsMax),
+  specialty: nullableText(LIMITS.agentSpecialtyMax),
+  providerId: z.string().min(1).max(64).nullable(),
+  modelId: z.string().min(1).max(LIMITS.modelIdMax).nullable(),
+  fallbackProviderId: z.string().min(1).max(64).nullable(),
+  fallbackModelId: z.string().min(1).max(LIMITS.modelIdMax).nullable(),
+  maxOutputTokens: z.number().int().min(1).max(LIMITS.agentMaxOutputTokens).nullable(),
+  temperature: z.number().min(0).max(2).nullable(),
+  enabled: z.boolean(),
+};
+
+/** Solo se crean agentes especialistas o personalizados; los demás roles ya existen y son únicos. */
+export const createAgentInput = z.object({
+  ...agentFields,
+  role: z.enum(['specialist', 'custom']).default('custom'),
+  description: agentFields.description.default(''),
+  specialty: agentFields.specialty.optional().default(null),
+  providerId: agentFields.providerId.optional().default(null),
+  modelId: agentFields.modelId.optional().default(null),
+  fallbackProviderId: agentFields.fallbackProviderId.optional().default(null),
+  fallbackModelId: agentFields.fallbackModelId.optional().default(null),
+  maxOutputTokens: agentFields.maxOutputTokens.optional().default(null),
+  temperature: agentFields.temperature.optional().default(null),
+  enabled: agentFields.enabled.default(true),
+});
+export type CreateAgentInput = z.infer<typeof createAgentInput>;
+
+/** Actualización parcial. El rol y el identificador no se cambian. */
+export const updateAgentInput = z.object(agentFields).partial();
+export type UpdateAgentInput = z.infer<typeof updateAgentInput>;
 
 // ---- Proveedores y modelos ----
 

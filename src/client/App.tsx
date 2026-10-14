@@ -3,6 +3,7 @@ import type { Conversation } from '../shared/schemas.js';
 import { api, ApiError } from './api.js';
 import { Sidebar, type View } from './components/Sidebar.js';
 import { ErrorBanner } from './components/ErrorBanner.js';
+import { AgentsPage } from './pages/AgentsPage.js';
 import { ChatPage } from './pages/ChatPage.js';
 import { ProvidersPage } from './pages/ProvidersPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
@@ -24,9 +25,9 @@ export function App() {
     void refresh();
   }, [refresh]);
 
-  const newChat = async () => {
+  const newChat = async (agentId: string | null = null) => {
     try {
-      const c = await api.createConversation();
+      const c = await api.createConversation(agentId);
       await refresh();
       setView({ name: 'chat', id: c.id });
     } catch (e) {
@@ -51,7 +52,7 @@ export function App() {
         view={view}
         conversations={conversations}
         onNavigate={setView}
-        onNewChat={newChat}
+        onNewChat={() => newChat()}
         onDeleteChat={deleteChat}
       />
       <main class="main">
@@ -64,12 +65,13 @@ export function App() {
               El proveedor «Simulado» funciona sin claves ni conexión. Para usar modelos reales, configura las claves en
               el archivo <code>.env</code> y revisa «Modelos y proveedores».
             </p>
-            <button class="btn primary" onClick={newChat}>
+            <button class="btn primary" onClick={() => newChat()}>
               Nuevo chat
             </button>
           </section>
         )}
         {view.name === 'chat' && <ChatPage key={view.id} conversationId={view.id} onChanged={refresh} />}
+        {view.name === 'agents' && <AgentsPage onChat={(agentId) => newChat(agentId)} />}
         {view.name === 'providers' && <ProvidersPage />}
         {view.name === 'settings' && (
           <SettingsPage

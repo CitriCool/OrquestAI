@@ -1,4 +1,4 @@
-import type { ChatEvent, Message, SendMessageInput } from '../../shared/schemas.js';
+import type { Agent, ChatEvent, Message, SendMessageInput } from '../../shared/schemas.js';
 import { HttpError } from '../http.js';
 import { assertModelAllowed } from '../policies/modelPolicy.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -43,6 +43,15 @@ export class ChatService {
     if (this.active.has(conversationId)) {
       throw new HttpError(409, 'invalid_request', 'Ya hay una respuesta en curso en esta conversación.', 'Espera a que termine o pulsa Detener.');
     }
+    const agent = conversation.agentId ? this.repo.getAgent(conversation.agentId) : null;
+    if (agent && !agent.enabled) {
+      throw new HttpError(
+        409,
+        'policy',
+        `El agente «${agent.name}» está deshabilitado.`,
+        'Habilítalo en Agentes o elige otro agente para esta conversación.',
+      );
+    }
     const provider = this.providers.get(input.providerId);
     if (!provider) throw new HttpError(400, 'config', 'El proveedor indicado no existe.', 'Elige un proveedor de la lista.');
     const status = provider.getProviderStatus();
@@ -69,7 +78,7 @@ export class ChatService {
     }
 
     return {
-      start: (emit) => this.run(conversationId, conversation.title, input, provider, controller, emit),
+      start: (emit) => this.run(conversationId, conversation.title, input, provider, agent, controller, emit),
     };
   }
 
@@ -86,6 +95,7 @@ export class ChatService {
     title: string,
     input: SendMessageInput,
     provider: ProviderAdapter,
+    agent: Agent | null,
     controller: AbortController,
     emit: (event: ChatEvent) => void,
   ): Promise<void> {
@@ -117,6 +127,7 @@ export class ChatService {
         status: 'streaming',
         providerId: provider.id,
         modelId: input.modelId,
+        agentId: agent?.id ?? null,
       });
       safeEmit({ type: 'assistant_start', message: assistant });
 
@@ -125,7 +136,9 @@ export class ChatService {
       try {
         const response = await provider.generateResponse({
           modelId: input.modelId,
-          messages: buildContext([...history, userMessage]),
+          messages: buildContext([...history, userMessage], agent),
+          maxOutputTokens: agent?.maxOutputTokens ?? undefined,
+          temperature: agent?.temperature ?? undefined,
           signal: controller.signal,
           timeoutMs: this.timeoutMs,
           onDelta: (piece) => {
@@ -175,7 +188,22 @@ export class ChatService {
   }
 }
 
-export function buildContext(messages: Message[]): ChatTurn[] {
+/**
+ * Instrucciones de sistema. Las del agente van aquí, separadas de los datos
+ * de la tarea (mensajes del usuario) para que estos no las sustituyan.
+ */
+export function systemPrompt(agent: Pick<Agent, 'name' | 'instructions' | 'specialty'> | null): string {
+  if (!agent) return SYSTEM_PROMPT;
+  const parts = [SYSTEM_PROMPT, `Actúas como el agente «${agent.name}».`];
+  if (agent.specialty) parts.push(`Especialidad: ${agent.specialty}.`);
+  parts.push(`Instrucciones del agente:\n${agent.instructions}`);
+  return parts.join('\n\n');
+}
+
+export function buildContext(
+  messages: Message[],
+  agent: Pick<Agent, 'name' | 'instructions' | 'specialty'> | null = null,
+): ChatTurn[] {
   const usable = messages.filter((m) => m.content.trim() && (m.role === 'user' || m.status === 'complete'));
   const selected: ChatTurn[] = [];
   let chars = 0;
@@ -185,7 +213,7 @@ export function buildContext(messages: Message[]): ChatTurn[] {
     selected.unshift({ role: m.role, content: m.content });
     chars += m.content.length;
   }
-  return [{ role: 'system', content: SYSTEM_PROMPT }, ...selected];
+  return [{ role: 'system', content: systemPrompt(agent) }, ...selected];
 }
 
 function makeTitle(content: string): string {

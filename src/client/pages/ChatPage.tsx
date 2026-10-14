@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import type { ChatEvent, ConversationDetail, Message, ProviderStatus } from '../../shared/schemas.js';
+import type { Agent, ChatEvent, ConversationDetail, Message, ProviderStatus } from '../../shared/schemas.js';
 import { LIMITS } from '../../shared/limits.js';
 import { api, ApiError } from '../api.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
@@ -14,6 +14,7 @@ interface Props {
 export function ChatPage({ conversationId, onChanged }: Props) {
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [providerId, setProviderId] = useState('simulado');
   const [modelId, setModelId] = useState('simulado-basico');
   const [input, setInput] = useState('');
@@ -24,19 +25,22 @@ export function ChatPage({ conversationId, onChanged }: Props) {
 
   const load = async () => {
     try {
-      const [conv, provs, settings] = await Promise.all([
+      const [conv, provs, settings, agentList] = await Promise.all([
         api.getConversation(conversationId),
         api.listProviders(),
         api.getSettings(),
+        api.listAgents(),
       ]);
       setDetail(conv.conversation);
       setTitle(conv.conversation.title);
       setRunning(conv.running);
       setProviders(provs);
+      setAgents(agentList);
       if (provs.some((p) => p.id === settings.defaultProviderId && p.configured)) {
         setProviderId(settings.defaultProviderId);
         setModelId(settings.defaultModelId);
       }
+      usePreferredModel(agentList.find((a) => a.id === conv.conversation.agentId), provs);
     } catch (e) {
       setError(e as ApiError);
     }
@@ -49,6 +53,27 @@ export function ChatPage({ conversationId, onChanged }: Props) {
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [detail?.messages.length, detail?.messages.at(-1)?.content]);
+
+  /** Si el agente tiene un modelo preferido y su proveedor está configurado, se preselecciona. */
+  const usePreferredModel = (agent: Agent | undefined, provs: ProviderStatus[]) => {
+    if (agent?.providerId && agent.modelId && provs.some((p) => p.id === agent.providerId && p.configured)) {
+      setProviderId(agent.providerId);
+      setModelId(agent.modelId);
+    }
+  };
+
+  const changeAgent = async (agentId: string | null) => {
+    try {
+      const { conversation } = await api.setConversationAgent(conversationId, agentId);
+      setDetail((d) => (d ? { ...d, agentId: conversation.agentId } : d));
+      usePreferredModel(agents.find((a) => a.id === agentId), providers);
+    } catch (e) {
+      setError(e as ApiError);
+    }
+  };
+
+  const agent = agents.find((a) => a.id === detail?.agentId);
+  const agentName = (id: string | null) => agents.find((a) => a.id === id)?.name;
 
   const provider = providers.find((p) => p.id === providerId);
   const needsConsent = provider ? provider.external && !provider.consentGiven : false;
@@ -145,6 +170,23 @@ export function ChatPage({ conversationId, onChanged }: Props) {
           onBlur={saveTitle}
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
         />
+        <label class="agent-select">
+          <span class="muted small">Agente</span>
+          <select
+            value={detail.agentId ?? ''}
+            disabled={running}
+            aria-label="Agente de la conversación"
+            onChange={(e) => void changeAgent((e.target as HTMLSelectElement).value || null)}
+          >
+            <option value="">Asistente general</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id} disabled={!a.enabled && a.id !== detail.agentId}>
+                {a.name}
+                {a.enabled ? '' : ' (deshabilitado)'}
+              </option>
+            ))}
+          </select>
+        </label>
         <span class={`state-pill ${running ? 'running' : 'idle'}`}>{running ? 'Generando respuesta' : 'En espera'}</span>
       </header>
 
@@ -155,7 +197,7 @@ export function ChatPage({ conversationId, onChanged }: Props) {
         {detail.messages.map((m) => (
           <article key={m.id} class={`msg ${m.role}`}>
             <div class="msg-meta">
-              <strong>{m.role === 'user' ? 'Tú' : 'Asistente'}</strong>
+              <strong>{m.role === 'user' ? 'Tú' : (agentName(m.agentId) ?? 'Asistente')}</strong>
               {m.role === 'assistant' && (
                 <>
                   <span class="muted">
@@ -179,6 +221,12 @@ export function ChatPage({ conversationId, onChanged }: Props) {
       </div>
 
       {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
+
+      {agent && !agent.enabled && (
+        <div class="banner warn">
+          <strong>El agente «{agent.name}» está deshabilitado.</strong> Habilítalo en Agentes o elige otro para seguir.
+        </div>
+      )}
 
       {needsConsent && provider && (
         <div class="banner warn">

@@ -4,8 +4,10 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import {
   consentInput,
+  createAgentInput,
   createConversationInput,
   sendMessageInput,
+  updateAgentInput,
   updateConversationInput,
   type ProviderStatus,
 } from '../shared/schemas.js';
@@ -36,6 +38,34 @@ export function createApp(deps: AppDeps) {
   const { repo, providers } = deps;
   const chat = new ChatService(repo, providers, deps.providerTimeoutMs);
   const api = new Hono();
+  repo.ensureDefaultAgents();
+
+  /** Un agente solo puede referirse a proveedores existentes y con proveedor y modelo indicados a la vez. */
+  const checkAgentModels = (a: {
+    providerId?: string | null;
+    modelId?: string | null;
+    fallbackProviderId?: string | null;
+    fallbackModelId?: string | null;
+  }) => {
+    for (const [p, m, label] of [
+      [a.providerId, a.modelId, 'preferido'],
+      [a.fallbackProviderId, a.fallbackModelId, 'de respaldo'],
+    ] as const) {
+      if (p === undefined && m === undefined) continue;
+      if (!p !== !m) {
+        throw new HttpError(400, 'invalid_request', `Indica proveedor y modelo ${label}, o deja ambos vacíos.`, 'Completa o vacía ambos campos.');
+      }
+      if (p && !providers.has(p)) {
+        throw new HttpError(400, 'config', `El proveedor ${label} indicado no existe.`, 'Elige un proveedor de la lista.');
+      }
+    }
+  };
+
+  const checkAgentExists = (agentId: string | null | undefined) => {
+    if (agentId && !repo.getAgent(agentId)) {
+      throw new HttpError(404, 'invalid_request', 'El agente no existe.', 'Elige un agente de la lista.');
+    }
+  };
 
   api.use('*', localGuard({ hosts: deps.allowedHosts, token: deps.token }));
   api.use(
@@ -63,7 +93,8 @@ export function createApp(deps: AppDeps) {
 
   api.post('/conversations', async (c) => {
     const input = await parseJson(c, createConversationInput);
-    return c.json({ conversation: repo.createConversation(input.title) }, 201);
+    checkAgentExists(input.agentId);
+    return c.json({ conversation: repo.createConversation(input.title, input.agentId ?? null) }, 201);
   });
 
   api.get('/conversations/:id', (c) => {
@@ -77,9 +108,12 @@ export function createApp(deps: AppDeps) {
 
   api.patch('/conversations/:id', async (c) => {
     const input = await parseJson(c, updateConversationInput);
-    const conversation = repo.renameConversation(c.req.param('id'), input.title);
-    if (!conversation) throw notFound();
-    return c.json({ conversation });
+    const id = c.req.param('id');
+    if (!repo.getConversation(id)) throw notFound();
+    checkAgentExists(input.agentId);
+    if (input.title !== undefined) repo.renameConversation(id, input.title);
+    if (input.agentId !== undefined) repo.setConversationAgent(id, input.agentId);
+    return c.json({ conversation: repo.getConversation(id) });
   });
 
   api.delete('/conversations/:id', (c) => {
@@ -105,6 +139,54 @@ export function createApp(deps: AppDeps) {
   });
 
   api.post('/conversations/:id/stop', (c) => c.json({ stopped: chat.stop(c.req.param('id')) }));
+
+  // ---- Agentes ----
+  api.get('/agents', (c) => c.json({ agents: repo.listAgents() }));
+
+  api.get('/agents/:id', (c) => {
+    const agent = repo.getAgent(c.req.param('id'));
+    if (!agent) throw agentNotFound();
+    return c.json({ agent });
+  });
+
+  api.post('/agents', async (c) => {
+    const input = await parseJson(c, createAgentInput);
+    checkAgentModels(input);
+    return c.json({ agent: repo.createAgent(input) }, 201);
+  });
+
+  api.patch('/agents/:id', async (c) => {
+    const input = await parseJson(c, updateAgentInput);
+    const current = repo.getAgent(c.req.param('id'));
+    if (!current) throw agentNotFound();
+    // Se valida el par resultante, no solo los campos enviados.
+    checkAgentModels({
+      providerId: input.providerId !== undefined ? input.providerId : current.providerId,
+      modelId: input.modelId !== undefined ? input.modelId : current.modelId,
+      fallbackProviderId: input.fallbackProviderId !== undefined ? input.fallbackProviderId : current.fallbackProviderId,
+      fallbackModelId: input.fallbackModelId !== undefined ? input.fallbackModelId : current.fallbackModelId,
+    });
+    return c.json({ agent: repo.updateAgent(current.id, input) });
+  });
+
+  api.delete('/agents/:id', (c) => {
+    const agent = repo.getAgent(c.req.param('id'));
+    if (!agent) throw agentNotFound();
+    if (agent.builtin) {
+      throw new HttpError(409, 'invalid_request', 'Los agentes iniciales no se pueden eliminar.', 'Puedes deshabilitarlo o restaurar sus valores.');
+    }
+    repo.deleteAgent(agent.id);
+    return c.json({ deleted: true });
+  });
+
+  api.post('/agents/:id/reset', (c) => {
+    const agent = repo.getAgent(c.req.param('id'));
+    if (!agent) throw agentNotFound();
+    if (!agent.builtin) {
+      throw new HttpError(409, 'invalid_request', 'Solo los agentes iniciales tienen valores que restaurar.', 'Edita el agente directamente.');
+    }
+    return c.json({ agent: repo.resetAgent(agent.id) });
+  });
 
   // ---- Proveedores y modelos ----
   api.get('/providers', (c) => {
@@ -168,6 +250,10 @@ export function createApp(deps: AppDeps) {
   const app = new Hono();
   app.route('/api', api);
   return app;
+}
+
+function agentNotFound() {
+  return new HttpError(404, 'invalid_request', 'El agente no existe.', 'Vuelve a la lista de agentes.');
 }
 
 function notFound() {

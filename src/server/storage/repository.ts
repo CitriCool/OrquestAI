@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import type { Conversation, ErrorKind, Message, Usage } from '../../shared/schemas.js';
+import type {
+  Agent,
+  Conversation,
+  CreateAgentInput,
+  ErrorKind,
+  Message,
+  UpdateAgentInput,
+  Usage,
+} from '../../shared/schemas.js';
+import { DEFAULT_AGENTS, findDefaultAgent } from '../agents/defaults.js';
 import { redact } from '../security/redact.js';
 import type { DB } from './db.js';
 
@@ -17,20 +26,87 @@ interface MessageRow {
   completion_tokens: number | null;
   cost: number | null;
   cost_kind: Usage['costKind'] | null;
+  agent_id: string | null;
   created_at: string;
 }
 
 interface ConversationRow {
   id: string;
   title: string;
+  agent_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
+interface AgentRow {
+  id: string;
+  name: string;
+  description: string;
+  role: Agent['role'];
+  instructions: string;
+  specialty: string | null;
+  provider_id: string | null;
+  model_id: string | null;
+  fallback_provider_id: string | null;
+  fallback_model_id: string | null;
+  max_output_tokens: number | null;
+  temperature: number | null;
+  enabled: number;
+  builtin: number;
+  created_at: string;
+  updated_at: string;
+  runs: number;
+  last_run_at: string | null;
+}
+
+/** Columnas editables del agente y su campo en la API. */
+const AGENT_COLUMNS = {
+  name: 'name',
+  description: 'description',
+  instructions: 'instructions',
+  specialty: 'specialty',
+  providerId: 'provider_id',
+  modelId: 'model_id',
+  fallbackProviderId: 'fallback_provider_id',
+  fallbackModelId: 'fallback_model_id',
+  maxOutputTokens: 'max_output_tokens',
+  temperature: 'temperature',
+  enabled: 'enabled',
+} as const satisfies Record<keyof UpdateAgentInput, string>;
+
+/** Agentes con su historial de ejecuciones (respuestas del asistente generadas por cada uno). */
+const AGENT_SELECT = `
+  SELECT a.*, COUNT(m.id) AS runs, MAX(m.created_at) AS last_run_at
+  FROM agents a
+  LEFT JOIN messages m ON m.agent_id = a.id AND m.role = 'assistant'`;
+
 const now = () => new Date().toISOString();
 
 function toConversation(r: ConversationRow): Conversation {
-  return { id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at };
+  return { id: r.id, title: r.title, agentId: r.agent_id, createdAt: r.created_at, updatedAt: r.updated_at };
+}
+
+function toAgent(r: AgentRow): Agent {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    role: r.role,
+    instructions: r.instructions,
+    specialty: r.specialty,
+    providerId: r.provider_id,
+    modelId: r.model_id,
+    fallbackProviderId: r.fallback_provider_id,
+    fallbackModelId: r.fallback_model_id,
+    maxOutputTokens: r.max_output_tokens,
+    temperature: r.temperature,
+    enabled: r.enabled === 1,
+    builtin: r.builtin === 1,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    runs: r.runs,
+    lastRunAt: r.last_run_at,
+  };
 }
 
 function toMessage(r: MessageRow): Message {
@@ -52,6 +128,7 @@ function toMessage(r: MessageRow): Message {
           costKind: r.cost_kind,
         }
       : null,
+    agentId: r.agent_id,
     createdAt: r.created_at,
   };
 }
@@ -73,13 +150,20 @@ export class Repository {
     return row ? toConversation(row) : null;
   }
 
-  createConversation(title = 'Nueva conversación'): Conversation {
+  createConversation(title = 'Nueva conversación', agentId: string | null = null): Conversation {
     const ts = now();
-    const c: Conversation = { id: randomUUID(), title, createdAt: ts, updatedAt: ts };
+    const c: Conversation = { id: randomUUID(), title, agentId, createdAt: ts, updatedAt: ts };
     this.db
-      .prepare('INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)')
-      .run(c.id, c.title, c.createdAt, c.updatedAt);
+      .prepare('INSERT INTO conversations (id, title, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(c.id, c.title, c.agentId, c.createdAt, c.updatedAt);
     return c;
+  }
+
+  setConversationAgent(id: string, agentId: string | null): Conversation | null {
+    const res = this.db
+      .prepare('UPDATE conversations SET agent_id = ?, updated_at = ? WHERE id = ?')
+      .run(agentId, now(), id);
+    return res.changes ? this.getConversation(id) : null;
   }
 
   renameConversation(id: string, title: string): Conversation | null {
@@ -115,6 +199,7 @@ export class Repository {
     status: Message['status'];
     providerId?: string | null;
     modelId?: string | null;
+    agentId?: string | null;
   }): Message {
     const id = randomUUID();
     const ts = now();
@@ -124,8 +209,8 @@ export class Repository {
         .get(input.conversationId) as { seq: number };
       this.db
         .prepare(
-          `INSERT INTO messages (id, conversation_id, role, content, provider_id, model_id, status, created_at, seq)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO messages (id, conversation_id, role, content, provider_id, model_id, agent_id, status, created_at, seq)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -134,6 +219,7 @@ export class Repository {
           input.content,
           input.providerId ?? null,
           input.modelId ?? null,
+          input.agentId ?? null,
           input.status,
           ts,
           next.seq,
@@ -189,6 +275,103 @@ export class Repository {
          WHERE status = 'streaming'`,
       )
       .run().changes;
+  }
+
+  // ---- Agentes ----
+
+  listAgents(): Agent[] {
+    const rows = this.db
+      .prepare(`${AGENT_SELECT} GROUP BY a.id ORDER BY a.created_at ASC, a.name ASC`)
+      .all() as AgentRow[];
+    // Primero los iniciales en el orden del equipo; después los personalizados por antigüedad.
+    const rank = (r: AgentRow) => {
+      const i = DEFAULT_AGENTS.findIndex((d) => d.id === r.id);
+      return r.builtin && i >= 0 ? i : DEFAULT_AGENTS.length;
+    };
+    return rows.sort((a, b) => rank(a) - rank(b)).map(toAgent);
+  }
+
+  getAgent(id: string): Agent | null {
+    const row = this.db.prepare(`${AGENT_SELECT} WHERE a.id = ? GROUP BY a.id`).get(id) as AgentRow | undefined;
+    return row ? toAgent(row) : null;
+  }
+
+  createAgent(input: CreateAgentInput): Agent {
+    const id = randomUUID();
+    const ts = now();
+    this.db
+      .prepare(
+        `INSERT INTO agents (id, name, description, role, instructions, specialty, provider_id, model_id,
+           fallback_provider_id, fallback_model_id, max_output_tokens, temperature, enabled, builtin, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      )
+      .run(
+        id,
+        input.name,
+        input.description,
+        input.role,
+        input.instructions,
+        input.specialty,
+        input.providerId,
+        input.modelId,
+        input.fallbackProviderId,
+        input.fallbackModelId,
+        input.maxOutputTokens,
+        input.temperature,
+        input.enabled ? 1 : 0,
+        ts,
+        ts,
+      );
+    return this.getAgent(id)!;
+  }
+
+  updateAgent(id: string, input: UpdateAgentInput): Agent | null {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, column] of Object.entries(AGENT_COLUMNS) as [keyof UpdateAgentInput, string][]) {
+      const value = input[key];
+      if (value === undefined) continue;
+      sets.push(`${column} = ?`);
+      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value);
+    }
+    if (sets.length === 0) return this.getAgent(id);
+    const res = this.db
+      .prepare(`UPDATE agents SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`)
+      .run(...values, now(), id);
+    return res.changes ? this.getAgent(id) : null;
+  }
+
+  /** Elimina un agente personalizado. Sus conversaciones y mensajes se conservan sin agente. */
+  deleteAgent(id: string): boolean {
+    return this.db.prepare('DELETE FROM agents WHERE id = ? AND builtin = 0').run(id).changes > 0;
+  }
+
+  /** Crea los agentes iniciales que falten. No modifica los que el usuario ya editó. */
+  ensureDefaultAgents(): void {
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO agents (id, name, description, role, instructions, specialty, enabled, builtin, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+    );
+    this.db.transaction(() => {
+      const ts = now();
+      for (const a of DEFAULT_AGENTS) {
+        insert.run(a.id, a.name, a.description, a.role, a.instructions, a.specialty ?? null, ts, ts);
+      }
+    })();
+  }
+
+  /** Restaura un agente inicial a sus valores de fábrica. Conserva su historial. */
+  resetAgent(id: string): Agent | null {
+    const d = findDefaultAgent(id);
+    if (!d) return null;
+    this.db
+      .prepare(
+        `UPDATE agents SET name = ?, description = ?, instructions = ?, specialty = ?, provider_id = NULL, model_id = NULL,
+           fallback_provider_id = NULL, fallback_model_id = NULL, max_output_tokens = NULL, temperature = NULL,
+           enabled = 1, updated_at = ? WHERE id = ?`,
+      )
+      .run(d.name, d.description, d.instructions, d.specialty ?? null, now(), id);
+    return this.getAgent(id);
   }
 
   // ---- Ajustes, consentimientos y observaciones ----
@@ -247,12 +430,16 @@ export class Repository {
     };
   }
 
-  /** Elimina todos los datos locales (no toca el esquema ni las migraciones). */
+  /**
+   * Elimina todos los datos locales (no toca el esquema ni las migraciones).
+   * Los agentes vuelven a su estado inicial.
+   */
   deleteAllData(): void {
     this.db.transaction(() => {
-      for (const table of ['messages', 'conversations', 'settings', 'provider_consents', 'provider_observations']) {
+      for (const table of ['messages', 'conversations', 'agents', 'settings', 'provider_consents', 'provider_observations']) {
         this.db.prepare(`DELETE FROM ${table}`).run();
       }
     })();
+    this.ensureDefaultAgents();
   }
 }

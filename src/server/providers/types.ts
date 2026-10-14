@@ -9,6 +9,7 @@ export interface GenerateRequest {
   modelId: string;
   messages: ChatTurn[];
   maxOutputTokens?: number;
+  temperature?: number;
   /** Cancelación por el usuario. */
   signal: AbortSignal;
   timeoutMs: number;

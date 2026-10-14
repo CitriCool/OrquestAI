@@ -161,6 +161,7 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): P
       stream,
     };
     if (req.maxOutputTokens) body.max_tokens = req.maxOutputTokens;
+    if (req.temperature !== undefined) body.temperature = req.temperature;
     if (stream && opts.requestStreamUsage) body.stream_options = { include_usage: true };
 
     const ctx = () => ({ userAborted: req.signal.aborted, timedOut: timeout.aborted });
