@@ -2,7 +2,7 @@
 
 Escritorio personal de IA para Ingeniería Civil Informática. Se ejecuta en tu equipo como una aplicación local que abres en el navegador.
 
-> **Estado: Fase 2, Sprint 2.2 (Coordinador y plan).** Funciona el chat con proveedores reales y simulados, con persistencia local. Puedes gestionar agentes, conversar con un agente concreto y crear tareas que el Coordinador planifica para que tú apruebes el plan. La ejecución de las subtareas, la revisión y la síntesis llegan en el Sprint 2.3; los presupuestos y la recuperación de tareas, en las fases siguientes (ver [Hoja de ruta](#hoja-de-ruta)).
+> **Estado: Fase 2 completa (agentes y orquestación).** Funciona el chat con proveedores reales y simulados, con persistencia local. Puedes gestionar agentes, conversar con un agente concreto y crear tareas: el Coordinador las planifica, tú apruebas el plan y los agentes lo ejecutan con revisión crítica y síntesis. Los modelos de pago con presupuestos llegan en la Fase 3 y la recuperación automática de tareas en la Fase 4 (ver [Hoja de ruta](#hoja-de-ruta)).
 >
 > **No existe instalador de escritorio.** La aplicación necesita Node.js y se inicia con un comando.
 
@@ -102,6 +102,27 @@ La planificación corre en segundo plano y puedes **detenerla**. Si cierras la a
 
 La disponibilidad de los modelos gratuitos cambia con frecuencia: es lo observado ese día, no una garantía. Para fijar el modelo del Coordinador, edita su **modelo preferido** en Agentes.
 
+## Ejecución de tareas
+
+Con el plan aprobado, pulsa **Ejecutar plan**. El flujo es secuencial y determinista, sin agentes que se llamen entre sí:
+
+1. **Subtareas.** Se ejecutan en el orden que marcan sus dependencias. Cada agente recibe sus instrucciones, el objetivo, los criterios, su encargo y **solo** los resultados de las subtareas de las que depende, recortados si son largos. Cada resultado se guarda antes de pasar a la siguiente.
+2. **Revisión crítica.** El Revisor evalúa cada criterio («cumple», «no cumple» o «no verificable») y devuelve observaciones en JSON validado: problema, gravedad, evidencia, criterio afectado, corrección sugerida, subtarea y estado. Si el formato no es válido, se le pide una corrección; si sigue mal, queda como limitación.
+3. **Corrección.** Las observaciones pendientes de gravedad **alta** se devuelven al agente original de la subtarea. Con revisión **estricta**, también las de gravedad **media**. Después se revisa de nuevo, y en cada ronda el Revisor indica qué quedó corregido, pendiente o descartado (con justificación).
+4. **Síntesis.** Si hay más de una subtarea, el Sintetizador integra todo con secciones fijas: solución, decisiones, resultado frente a los criterios, objeciones resueltas y pendientes, pruebas, y supuestos y limitaciones. Con una sola subtarea, la aplicación arma el resultado sin otra llamada.
+
+**Control de rondas y llamadas.** El servidor aplica los límites del plan (rondas y llamadas máximas). Antes de cada ronda de corrección comprueba que queden llamadas para corregir, revisar y sintetizar. Si el Revisor repite las mismas observaciones sin información nueva, el proceso se detiene para no gastar llamadas.
+
+**Resultado.** Puede ser **completo**, o **parcial con limitaciones**, por ejemplo si quedan observaciones sin corregir, se agotó el límite o una revisión no tuvo formato válido. Las limitaciones se muestran siempre. La aplicación **no ejecuta código**: las comprobaciones de los agentes son razonamiento del modelo y no una verificación objetiva, y así se indica en el resultado.
+
+En la pantalla ves el **flujo** de la ejecución paso a paso (subtareas, revisiones con sus observaciones, correcciones y síntesis), con el modelo, los tokens y la entrega de cada paso. Puedes **detener** la ejecución en cualquier momento; la tarea queda «Interrumpida» con lo obtenido hasta entonces y puedes **ejecutarla de nuevo**. Al final puedes **aceptar el resultado**, **descargarlo** en Markdown o **copiarlo**.
+
+Los agentes con **modelo preferido** usan el suyo. Los demás usan el modelo que elijas en la tarea. Antes de la primera llamada se comprueba que todos los modelos que se usarán estén permitidos.
+
+**Fallos y respuestas cortadas.** Si falla una subtarea, la ejecución se detiene y la tarea queda «Falló la ejecución» con el error y las entregas anteriores guardadas. Si falla la revisión o la síntesis, se conserva el trabajo hecho y el resultado queda parcial, con el fallo explicado. Cuando una respuesta se corta por el límite de tokens de salida, se acepta pero se declara como limitación; si se corta la revisión, se le pide una versión más breve.
+
+**Tiempos.** Cada llamada dentro de una tarea puede durar hasta `TASK_CALL_TIMEOUT_MS` (300 s por omisión), porque esas respuestas son largas; el chat usa `PROVIDER_TIMEOUT_MS` (120 s). Con modelos gratuitos, una tarea de 3 subtareas tarda unos 4 a 5 minutos.
+
 ## Política de costes en esta versión
 
 Modo activo: **A · exclusivamente gratuito**. Antes de cada envío, el servidor comprueba que el modelo esté clasificado como gratuito. Bloquea los modelos de pago y los que no tienen un coste verificable, aunque la interfaz intente usarlos. Los modelos de pago, con presupuestos y autorización explícita, se habilitan en la Fase 3.
@@ -135,6 +156,17 @@ Con el proveedor **Simulado** puedes escribir estos comandos como mensaje:
 
 En **Tareas**, el Simulado devuelve un plan de ejemplo. Si el objetivo incluye `/plan invalido`, nunca entrega un plan válido. Con `/plan reparable`, el primer intento falla y la corrección funciona.
 
+Para probar la ejecución, escribe en el **contexto** de la tarea:
+
+| Contexto | Simula |
+|---|---|
+| `/revision cambios` | La primera revisión pide un cambio importante; tras la corrección, aprueba |
+| `/revision menor` | La revisión pide un cambio de gravedad media (solo se corrige con revisión estricta) |
+| `/revision repetida` | La revisión repite siempre la misma observación (detención por falta de avance) |
+| `/revision invalida` | La revisión nunca tiene formato válido |
+| `/ejecucion error` | Las subtareas fallan con un error del proveedor |
+| `/ejecucion lenta` | Las subtareas responden lento, para probar **Detener** |
+
 ## Estructura
 
 ```
@@ -143,7 +175,7 @@ src/
 │   ├── app.ts            Rutas de la API (Hono)
 │   ├── main.ts           Arranque del servidor
 │   ├── agents/           Agentes iniciales del equipo
-│   ├── tasks/            Planificación: Coordinador, validación del plan y reglas de complejidad
+│   ├── tasks/            Planificación, ejecución (subtareas, revisión, corrección, síntesis) y reglas de complejidad
 │   ├── chat/             Servicio de conversación y contexto por llamada
 │   ├── providers/        Contrato común, errores, adaptadores (simulado, compatible con OpenAI)
 │   ├── policies/         Política de modelos permitidos
@@ -165,7 +197,7 @@ tests/
 | 1 | Núcleo: interfaz, servidor local, SQLite, proveedores, chat, errores, pruebas | **Cerrada** (14-10-2026, verificada con OpenRouter real) |
 | 2.1 | Gestión de agentes y chat con un agente | **Implementado** |
 | 2.2 | Coordinador: tareas, planes en JSON validado y aprobación del plan | **Implementado** |
-| 2.3 | Ejecución secuencial de subtareas, revisión crítica, síntesis y vista del flujo | Pendiente |
+| 2.3 | Ejecución secuencial de subtareas, revisión crítica, síntesis y vista del flujo | **Implementado** |
 | 3 | Modelos de pago, presupuestos y escalamiento | Pendiente |
 | 4 | Transferencia y recuperación de tareas | Pendiente |
 | 5 | Seguridad, pruebas de integración y documentación completa | Pendiente |
@@ -176,7 +208,10 @@ tests/
 - No hay instalador; se requiere Node.js y abrir la app en el navegador.
 - Las pruebas automatizadas usan respuestas simuladas. La conexión real se verificó a mano el 14-10-2026: OpenRouter funciona de punta a punta con modelos gratuitos (también con agentes), y OpenCode Zen lista sus modelos pero rechaza Big Pickle desde aplicaciones de terceros.
 - El listado gratuito de OpenRouter incluye algunos modelos que no son de chat (por ejemplo, de música). Si eliges uno, el proveedor puede responder con error.
-- Los planes aprobados todavía no se ejecutan: la ejecución de subtareas, la revisión crítica y la síntesis llegan en el Sprint 2.3.
+- La ejecución es solo secuencial; la ejecución en paralelo de subtareas independientes queda para más adelante.
+- Si una ejecución se interrumpe o falla, se vuelve a ejecutar desde el principio. La reanudación desde el punto de corte y el cambio automático a un modelo de respaldo llegan en la Fase 4.
+- Aún no se pueden pedir cambios sobre un resultado terminado. Puedes pedir una nueva versión del plan con comentarios y ejecutarla.
+- El resultado se muestra como texto (el Markdown no se renderiza).
 - Los planes no se editan a mano: se piden versiones nuevas con comentarios.
 - La salida en JSON se pide en las instrucciones y se valida en el servidor; no se usa el modo JSON nativo de los proveedores porque su soporte varía según el modelo.
 - Los modelos gratuitos suelen responder con límite de solicitudes (429). Aún no hay reintentos automáticos (Fase 4).

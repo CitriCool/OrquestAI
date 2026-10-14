@@ -7,6 +7,8 @@ export interface AppConfig {
   host: '127.0.0.1';
   dataDir: string;
   providerTimeoutMs: number;
+  /** Llamadas dentro de tareas (planificar, subtareas, revisión, síntesis): respuestas más largas. */
+  taskCallTimeoutMs: number;
   /** Claves solo en memoria del servidor. */
   secrets: {
     openrouter: string | null;
@@ -39,6 +41,7 @@ export function loadConfig(): AppConfig {
     host: '127.0.0.1',
     dataDir: path.resolve(process.env.DATA_DIR?.trim() || './data'),
     providerTimeoutMs: readInt('PROVIDER_TIMEOUT_MS', 120_000, 1_000, 600_000),
+    taskCallTimeoutMs: readInt('TASK_CALL_TIMEOUT_MS', 300_000, 1_000, 900_000),
     secrets: {
       openrouter: readSecret('OPENROUTER_API_KEY'),
       opencodeZen: readSecret('OPENCODE_ZEN_API_KEY'),

@@ -232,10 +232,23 @@ export const reviewLevelSchema = z.enum(['none', 'standard', 'strict']);
 export type ReviewLevel = z.infer<typeof reviewLevelSchema>;
 
 /**
- * Estados de una tarea. En el Sprint 2.2 una tarea llega hasta «approved»;
- * la ejecución de subtareas se añade en el Sprint 2.3.
+ * Estados de una tarea: planificación (draft → planning → plan_ready →
+ * approved), ejecución (running → completed | interrupted | failed) y
+ * cierre (done cuando el usuario acepta el resultado, o cancelled).
  */
-export const taskStatusSchema = z.enum(['draft', 'planning', 'plan_ready', 'plan_failed', 'approved', 'cancelled']);
+export const taskStatusSchema = z.enum([
+  'draft',
+  'planning',
+  'plan_ready',
+  'plan_failed',
+  'approved',
+  'running',
+  'completed',
+  'interrupted',
+  'failed',
+  'done',
+  'cancelled',
+]);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
 /** Subtarea tal como la propone el Coordinador. */
@@ -297,7 +310,53 @@ export const planSchema = z.object({
 });
 export type Plan = z.infer<typeof planSchema>;
 
-export const taskRunKindSchema = z.enum(['plan', 'plan_repair']);
+export const taskRunKindSchema = z.enum([
+  'plan',
+  'plan_repair',
+  'subtask',
+  'review',
+  'review_repair',
+  'correction',
+  'synthesis',
+]);
+export type TaskRunKind = z.infer<typeof taskRunKindSchema>;
+
+// ---- Revisión crítica (Sprint 2.3) ----
+
+export const observationSeveritySchema = z.enum(['alta', 'media', 'baja']);
+export const observationStatusSchema = z.enum(['pendiente', 'corregido', 'descartado', 'no_verificable']);
+
+export const reviewObservationSchema = z.object({
+  id: z.string().trim().min(1).max(40),
+  problem: z.string().trim().min(1).max(1_000),
+  severity: observationSeveritySchema,
+  evidence: z.string().trim().max(1_500).default(''),
+  /** Criterio de aceptación afectado (texto), si aplica. */
+  criterion: z.string().trim().max(500).default(''),
+  suggestedFix: z.string().trim().max(1_500).default(''),
+  /** Subtarea a la que corresponde la corrección, si se puede identificar. */
+  subtaskId: z.string().trim().max(40).nullable().default(null),
+  status: observationStatusSchema.default('pendiente'),
+  /** Obligatoria si se descarta: no se descarta sin justificación. */
+  justification: z.string().trim().max(1_000).default(''),
+});
+export type ReviewObservation = z.infer<typeof reviewObservationSchema>;
+
+export const reviewContentSchema = z.object({
+  verdict: z.enum(['aprobado', 'requiere_cambios']),
+  summary: z.string().trim().min(1).max(2_000),
+  criteria: z
+    .array(
+      z.object({
+        criterion: z.string().trim().min(1).max(500),
+        status: z.enum(['cumple', 'no_cumple', 'no_verificable']),
+        note: z.string().trim().max(1_000).default(''),
+      }),
+    )
+    .max(15),
+  observations: z.array(reviewObservationSchema).max(15),
+});
+export type ReviewContent = z.infer<typeof reviewContentSchema>;
 export const taskRunStatusSchema = z.enum(['running', 'complete', 'error', 'cancelled']);
 
 /** Cada llamada a un modelo dentro de una tarea, para el historial y el control de llamadas. */
@@ -307,9 +366,17 @@ export const taskRunSchema = z.object({
   planId: z.string().nullable(),
   agentId: z.string().nullable(),
   kind: taskRunKindSchema,
+  /** Número de ejecución del plan (null en llamadas de planificación). */
+  execution: z.number().int().positive().nullable(),
+  round: z.number().int().positive().nullable(),
+  subtaskId: z.string().nullable(),
   providerId: z.string(),
   modelId: z.string(),
   status: taskRunStatusSchema,
+  /** Texto devuelto por el modelo. */
+  output: z.string().nullable(),
+  /** Revisión ya validada (solo en llamadas de revisión). */
+  review: reviewContentSchema.nullable(),
   errorKind: errorKindSchema.nullable(),
   errorMessage: z.string().nullable(),
   usage: usageSchema.nullable(),
@@ -330,6 +397,12 @@ export const taskSchema = z.object({
   status: taskStatusSchema,
   errorKind: errorKindSchema.nullable(),
   errorMessage: z.string().nullable(),
+  /** Resultado final (Markdown) de la última ejecución. */
+  result: z.string().nullable(),
+  /** complete = cumple sin observaciones importantes pendientes; partial = con limitaciones declaradas. */
+  outcome: z.enum(['complete', 'partial']).nullable(),
+  /** Motivos por los que el resultado es parcial. */
+  limitations: z.array(z.string()),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -358,6 +431,13 @@ export const planTaskInput = z.object({
   feedback: z.string().trim().max(LIMITS.feedbackMax).optional(),
 });
 export type PlanTaskInput = z.infer<typeof planTaskInput>;
+
+/** Ejecuta el plan aprobado. Los agentes con modelo preferido usan el suyo. */
+export const executeTaskInput = z.object({
+  providerId: z.string().min(1).max(64),
+  modelId: z.string().min(1).max(LIMITS.modelIdMax),
+});
+export type ExecuteTaskInput = z.infer<typeof executeTaskInput>;
 
 export const updateTaskInput = z
   .object({

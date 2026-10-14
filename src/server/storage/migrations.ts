@@ -6,6 +6,11 @@ export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /**
+   * Para reconstruir tablas (SQLite no permite cambiar un CHECK): desactiva
+   * las claves foráneas durante la migración y comprueba la integridad al final.
+   */
+  rebuildsTables?: boolean;
 }
 
 export const migrations: Migration[] = [
@@ -150,6 +155,73 @@ export const migrations: Migration[] = [
       );
       CREATE INDEX idx_task_runs_task ON task_runs(task_id, started_at);
       CREATE INDEX idx_task_runs_agent ON task_runs(agent_id);
+    `,
+  },
+  {
+    version: 4,
+    name: 'ejecucion_de_tareas',
+    rebuildsTables: true,
+    sql: `
+      -- Estados de ejecución y resultado final en las tareas.
+      CREATE TABLE tasks_new (
+        id                   TEXT PRIMARY KEY,
+        title                TEXT NOT NULL,
+        objective            TEXT NOT NULL,
+        context              TEXT NOT NULL DEFAULT '',
+        acceptance_criteria  TEXT NOT NULL DEFAULT '',
+        review_level         TEXT NOT NULL CHECK (review_level IN ('none', 'standard', 'strict')),
+        complexity_override  INTEGER CHECK (complexity_override IN (1, 2, 3)),
+        status               TEXT NOT NULL CHECK (status IN ('draft', 'planning', 'plan_ready', 'plan_failed',
+                               'approved', 'running', 'completed', 'interrupted', 'failed', 'done', 'cancelled')),
+        error_kind           TEXT,
+        error_message        TEXT,
+        result               TEXT,
+        outcome              TEXT CHECK (outcome IN ('complete', 'partial')),
+        limitations          TEXT NOT NULL DEFAULT '[]',
+        created_at           TEXT NOT NULL,
+        updated_at           TEXT NOT NULL
+      );
+      INSERT INTO tasks_new (id, title, objective, context, acceptance_criteria, review_level, complexity_override,
+          status, error_kind, error_message, created_at, updated_at)
+        SELECT id, title, objective, context, acceptance_criteria, review_level, complexity_override,
+          status, error_kind, error_message, created_at, updated_at FROM tasks;
+      DROP TABLE tasks;
+      ALTER TABLE tasks_new RENAME TO tasks;
+
+      -- Cada llamada guarda ahora su etapa, ronda, subtarea y el texto devuelto.
+      CREATE TABLE task_runs_new (
+        id                 TEXT PRIMARY KEY,
+        task_id            TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        plan_id            TEXT REFERENCES plans(id) ON DELETE SET NULL,
+        agent_id           TEXT REFERENCES agents(id) ON DELETE SET NULL,
+        kind               TEXT NOT NULL CHECK (kind IN ('plan', 'plan_repair', 'subtask', 'review', 'review_repair',
+                             'correction', 'synthesis')),
+        execution          INTEGER,
+        round              INTEGER,
+        subtask_id         TEXT,
+        provider_id        TEXT NOT NULL,
+        model_id           TEXT NOT NULL,
+        status             TEXT NOT NULL CHECK (status IN ('running', 'complete', 'error', 'cancelled')),
+        output             TEXT,
+        review             TEXT,
+        error_kind         TEXT,
+        error_message      TEXT,
+        prompt_tokens      INTEGER,
+        completion_tokens  INTEGER,
+        cost               REAL,
+        cost_kind          TEXT CHECK (cost_kind IN ('estimated', 'reported', 'unknown')),
+        started_at         TEXT NOT NULL,
+        finished_at        TEXT
+      );
+      INSERT INTO task_runs_new (id, task_id, plan_id, agent_id, kind, provider_id, model_id, status, error_kind,
+          error_message, prompt_tokens, completion_tokens, cost, cost_kind, started_at, finished_at)
+        SELECT id, task_id, plan_id, agent_id, kind, provider_id, model_id, status, error_kind,
+          error_message, prompt_tokens, completion_tokens, cost, cost_kind, started_at, finished_at FROM task_runs;
+      DROP TABLE task_runs;
+      ALTER TABLE task_runs_new RENAME TO task_runs;
+      CREATE INDEX idx_task_runs_task ON task_runs(task_id, started_at);
+      CREATE INDEX idx_task_runs_agent ON task_runs(agent_id);
+      CREATE INDEX idx_task_runs_execution ON task_runs(task_id, execution);
     `,
   },
 ];

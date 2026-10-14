@@ -12,7 +12,7 @@ describe('persistencia SQLite', () => {
     const db = openDatabase(':memory:');
     expect(migrate(db, migrations)).toEqual([]);
     const versions = db.prepare('SELECT version FROM schema_migrations').all();
-    expect(versions).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    expect(versions).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
   });
 
   it('borrar una conversación elimina sus mensajes (integridad referencial)', () => {
@@ -27,9 +27,40 @@ describe('persistencia SQLite', () => {
     const db = openDatabase(':memory:', migrations.filter((m) => m.version === 1));
     const old = new Date().toISOString();
     db.prepare('INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run('c1', 'Antigua', old, old);
-    expect(migrate(db, migrations)).toEqual([2, 3]);
+    expect(migrate(db, migrations)).toEqual([2, 3, 4]);
     const repo = new Repository(db);
     expect(repo.getConversation('c1')).toMatchObject({ title: 'Antigua', agentId: null });
+  });
+
+  it('la migración 4 reconstruye tareas y llamadas sin perder planes ni historial', () => {
+    const db = openDatabase(':memory:', migrations.filter((m) => m.version <= 3));
+    const repo = new Repository(db);
+    repo.ensureDefaultAgents();
+    const ts = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO tasks (id, title, objective, review_level, status, created_at, updated_at)
+       VALUES ('t1', 'Antigua', 'Objetivo', 'standard', 'approved', ?, ?)`,
+    ).run(ts, ts);
+    db.prepare(
+      `INSERT INTO plans (id, task_id, version, status, rule_complexity, provider_id, model_id, created_at)
+       VALUES ('p1', 't1', 1, 'approved', 2, 'simulado', 'simulado-basico', ?)`,
+    ).run(ts);
+    db.prepare(
+      `INSERT INTO task_runs (id, task_id, plan_id, agent_id, kind, provider_id, model_id, status, started_at)
+       VALUES ('r1', 't1', 'p1', 'coordinador', 'plan', 'simulado', 'simulado-basico', 'complete', ?)`,
+    ).run(ts);
+
+    expect(migrate(db, migrations)).toEqual([4]);
+    const tasks = new TaskRepository(db);
+    const detail = tasks.getTaskDetail('t1')!;
+    expect(detail).toMatchObject({ status: 'approved', result: null, outcome: null, limitations: [] });
+    expect(detail.plans.map((p) => p.id)).toEqual(['p1']);
+    expect(detail.runs[0]).toMatchObject({ id: 'r1', kind: 'plan', planId: 'p1', execution: null, output: null });
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    // La cascada sigue funcionando sobre la tabla reconstruida.
+    tasks.deleteTask('t1');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM plans').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM task_runs').get()).toEqual({ n: 0 });
   });
 
   it('crea los agentes iniciales una sola vez y conserva las ediciones', () => {

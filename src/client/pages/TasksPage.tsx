@@ -3,10 +3,13 @@ import type {
   Agent,
   ComplexityLevel,
   Plan,
+  PlanContent,
   ProviderStatus,
+  ReviewContent,
   ReviewLevel,
   Task,
   TaskDetail,
+  TaskRun,
 } from '../../shared/schemas.js';
 import { LIMITS } from '../../shared/limits.js';
 import { api, ApiError } from '../api.js';
@@ -19,6 +22,7 @@ import {
   planStatusLabel,
   reviewLevelLabel,
   runKindLabel,
+  runStatusLabel,
   taskStatusLabel,
   usageLabel,
 } from '../format.js';
@@ -50,7 +54,8 @@ export function TasksPage({ initialId }: { initialId?: string }) {
       <h1>Tareas</h1>
       <p class="muted">
         Describe un objetivo y el Coordinador propone un plan: complejidad, criterios de aceptación, subtareas y agentes.
-        Revisas el plan y lo apruebas. La ejecución de las subtareas llega en el próximo sprint.
+        Lo revisas, lo apruebas y lo ejecutas: cada agente hace su parte, el Revisor crítico la evalúa y el Sintetizador
+        integra el resultado.
       </p>
       {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
 
@@ -224,6 +229,7 @@ interface TaskViewProps {
 function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [executing, setExecuting] = useState(false);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [providerId, setProviderId] = useState('simulado');
@@ -238,9 +244,11 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
     try {
       const r = await api.getTask(taskId);
       setTask(r.task);
-      const active = r.planning || r.task.status === 'planning';
-      setPlanning(active);
-      if (active) timer.current = setTimeout(() => void refresh(), POLL_MS);
+      const isPlanning = r.planning || r.task.status === 'planning';
+      const isExecuting = r.executing || r.task.status === 'running';
+      setPlanning(isPlanning);
+      setExecuting(isExecuting);
+      if (isPlanning || isExecuting) timer.current = setTimeout(() => void refresh(), POLL_MS);
       else onChanged();
     } catch (e) {
       setError(e as ApiError);
@@ -279,6 +287,8 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
   const latest = task.plans.at(-1) ?? null;
   const shown = task.plans.find((p) => p.version === viewVersion) ?? latest;
   const closed = task.status === 'cancelled';
+  const busy = planning || executing;
+  const hasExecutions = task.runs.some((r) => r.execution !== null);
 
   const act = async (fn: () => Promise<unknown>) => {
     setError(null);
@@ -296,6 +306,12 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
       onChanged(); // la lista muestra «Planificando…» de inmediato
       setViewVersion(null);
       if (withFeedback) setFeedback('');
+    });
+
+  const startExecution = () =>
+    act(async () => {
+      await api.executeTask(taskId, { providerId, modelId });
+      onChanged();
     });
 
   return (
@@ -333,12 +349,15 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
 
       {!closed && (
         <section class="plan-controls">
-          <h3>{current ? 'Nueva versión del plan' : 'Planificar con el Coordinador'}</h3>
+          <h3>Modelo</h3>
+          <p class="muted small">
+            Se usa para planificar y para los agentes que no tienen un modelo preferido.
+          </p>
           <ModelPicker
             providers={providers}
             providerId={providerId}
             modelId={modelId}
-            disabled={planning}
+            disabled={busy}
             onChange={(p, m) => {
               setProviderId(p);
               setModelId(m);
@@ -362,40 +381,60 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
               </button>
             </div>
           )}
-          {current && (
+          {current && !executing && (
             <label class="wide-label">
               Cambios que quieres en el plan (opcional)
               <textarea
                 rows={3}
                 value={feedback}
                 maxLength={LIMITS.feedbackMax}
-                disabled={planning}
+                disabled={busy}
                 placeholder="Por ejemplo: agrega una subtarea de pruebas, usa PostgreSQL, separa el diseño de la API."
                 onInput={(e) => setFeedback((e.target as HTMLTextAreaElement).value)}
               />
             </label>
           )}
           <div class="row">
-            {planning ? (
+            {busy ? (
               <>
-                <span class="state-pill running">El Coordinador está planificando…</span>
+                <span class="state-pill running">
+                  {planning ? 'El Coordinador está planificando…' : 'Los agentes están trabajando…'}
+                </span>
                 <button class="btn danger" onClick={() => act(() => api.stopTask(taskId))}>
                   Detener
                 </button>
               </>
             ) : (
-              <button
-                class="btn primary"
-                disabled={!modelId || needsConsent}
-                onClick={() => startPlan(!!(current && feedback.trim()))}
-              >
-                {current ? (feedback.trim() ? 'Pedir nueva versión con estos cambios' : 'Generar otra versión') : 'Generar plan'}
-              </button>
+              <>
+                {current?.status === 'approved' && task.status !== 'done' && (
+                  <button class="btn primary" disabled={!modelId || needsConsent} onClick={startExecution}>
+                    {hasExecutions ? 'Ejecutar de nuevo' : 'Ejecutar plan'}
+                  </button>
+                )}
+                <button
+                  class={`btn ${current?.status === 'approved' ? '' : 'primary'}`}
+                  disabled={!modelId || needsConsent}
+                  onClick={() => startPlan(!!(current && feedback.trim()))}
+                >
+                  {current ? (feedback.trim() ? 'Pedir nueva versión con estos cambios' : 'Generar otra versión del plan') : 'Generar plan'}
+                </button>
+              </>
             )}
           </div>
         </section>
       )}
 
+      {hasExecutions && (
+        <ExecutionView
+          task={task}
+          agents={agents}
+          executing={executing}
+          onAccept={() => act(() => api.acceptTask(taskId))}
+        />
+      )}
+
+      <details class="plan-wrap" open={!hasExecutions}>
+      <summary>Plan{current ? ` v${current.version} · ${planStatusLabel(current.status)}` : ''}</summary>
       {task.plans.length > 1 && (
         <div class="row versions">
           <span class="muted small">Versiones:</span>
@@ -416,12 +455,13 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
           plan={shown}
           task={task}
           agents={agents}
-          canApprove={!planning && task.status === 'plan_ready' && shown.id === current?.id && shown.status === 'proposed'}
+          canApprove={!busy && task.status === 'plan_ready' && shown.id === current?.id && shown.status === 'proposed'}
           onApprove={() => act(() => api.approvePlan(taskId, shown.id))}
           onOverride={(level) => act(() => api.updateTask(taskId, { complexityOverride: level }))}
-          lockOverride={planning || closed || task.status === 'approved'}
+          lockOverride={busy || closed || task.status !== 'plan_ready'}
         />
       )}
+      </details>
 
       {task.runs.length > 0 && (
         <details class="task-data" open={task.runs.some((r) => r.status === 'error')}>
@@ -431,6 +471,7 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
               <thead>
                 <tr>
                   <th>Tipo</th>
+                  <th>Ejecución</th>
                   <th>Agente</th>
                   <th>Modelo</th>
                   <th>Estado</th>
@@ -442,12 +483,13 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
                 {task.runs.map((r) => (
                   <tr key={r.id}>
                     <td>{runKindLabel(r.kind)}</td>
+                    <td>{r.execution ?? '—'}</td>
                     <td>{agents.find((a) => a.id === r.agentId)?.name ?? '—'}</td>
                     <td class="small">
                       {r.providerId} / {r.modelId}
                     </td>
                     <td>
-                      <span class={`badge status-${r.status === 'running' ? 'streaming' : r.status}`}>{r.status}</span>
+                      <span class={`badge status-${r.status === 'running' ? 'streaming' : r.status}`}>{runStatusLabel(r.status)}</span>
                       {r.errorMessage && <div class="msg-error">{r.errorMessage}</div>}
                     </td>
                     <td class="small">{usageLabel(r.usage) ?? '—'}</td>
@@ -461,7 +503,7 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
       )}
 
       <div class="row task-actions">
-        {!closed && task.status !== 'approved' && (
+        {!closed && !busy && task.status !== 'done' && (
           <button
             class="btn ghost"
             onClick={() => confirm('¿Cancelar esta tarea? Podrás consultarla, pero no volver a planificarla.') && act(() => api.cancelTask(taskId))}
@@ -485,6 +527,203 @@ function TaskView({ taskId, onChanged, onDeleted }: TaskViewProps) {
         </button>
       </div>
     </article>
+  );
+}
+
+/** Orden de ejecución de las subtareas según sus dependencias. */
+function orderOf(content: PlanContent): string[] {
+  const order: string[] = [];
+  const pending = [...content.subtasks];
+  while (pending.length) {
+    const i = pending.findIndex((s) => s.dependsOn.every((d) => order.includes(d)));
+    if (i < 0) break;
+    order.push(pending.splice(i, 1)[0]!.id);
+  }
+  return order;
+}
+
+interface ExecutionViewProps {
+  task: TaskDetail;
+  agents: Agent[];
+  executing: boolean;
+  onAccept: () => void;
+}
+
+/** Flujo de la última ejecución (subtareas, revisión, correcciones y síntesis) y su resultado. */
+function ExecutionView({ task, agents, executing, onAccept }: ExecutionViewProps) {
+  const latest = Math.max(...task.runs.map((r) => r.execution ?? 0));
+  const runs = task.runs.filter((r) => r.execution === latest);
+  const plan = task.plans.find((p) => p.id === runs[0]?.planId) ?? null;
+  const content = plan?.content ?? null;
+  const done = new Set(runs.filter((r) => r.kind === 'subtask').map((r) => r.subtaskId));
+  const pendingSubtasks = content ? orderOf(content).filter((id) => !done.has(id)) : [];
+  const title = (id: string | null) => content?.subtasks.find((s) => s.id === id)?.title ?? id ?? '';
+  const agentName = (id: string | null) => agents.find((a) => a.id === id)?.name ?? '—';
+  const finished = !executing && task.status !== 'running';
+
+  const download = () => {
+    const blob = new Blob([`# ${task.title}\n\n${task.result ?? ''}\n`], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${task.title.replace(/[^\p{L}\p{N}]+/gu, '-').slice(0, 60) || 'tarea'}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  return (
+    <section class="execution">
+      <div class="card-header">
+        <h3>Ejecución {latest}</h3>
+        {plan && <span class="muted small">con el plan v{plan.version}</span>}
+        {plan?.limits && (
+          <span class="muted small">
+            · {runs.length} de {plan.limits.maxCalls} llamadas
+          </span>
+        )}
+      </div>
+
+      <ol class="flow">
+        {runs.map((r) => (
+          <FlowStep key={r.id} run={r} title={title(r.subtaskId)} agentName={agentName(r.agentId)} />
+        ))}
+        {!finished &&
+          pendingSubtasks.map((id) => (
+            <li key={id} class="flow-step pending">
+              <div class="flow-head">
+                <span class="badge">Pendiente</span>
+                <strong>Subtarea {id}</strong> · {title(id)}
+              </div>
+            </li>
+          ))}
+        {!finished && (
+          <li class="flow-step pending">
+            <div class="flow-head muted small">Después: revisión crítica y síntesis según el plan.</div>
+          </li>
+        )}
+      </ol>
+
+      {finished && task.result && (
+        <div class="result">
+          <div class="card-header">
+            <h3>Resultado</h3>
+            <span class={`badge ${task.outcome === 'complete' ? 'ok' : 'warn'}`}>
+              {task.outcome === 'complete' ? 'Completo' : 'Parcial, con limitaciones'}
+            </span>
+            {task.status === 'done' && <span class="badge ok">Aceptado</span>}
+          </div>
+          {task.limitations.length > 0 && (
+            <ul class="notes">
+              {task.limitations.map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          )}
+          <div class="result-body pre">{task.result}</div>
+          <p class="muted small">
+            Las afirmaciones técnicas de los agentes no se verificaron ejecutando código: revísalas antes de usarlas.
+          </p>
+          <div class="row">
+            {task.status === 'completed' && (
+              <button class="btn primary" onClick={onAccept}>
+                Aceptar resultado
+              </button>
+            )}
+            <button class="btn" onClick={download}>
+              Descargar .md
+            </button>
+            <button class="btn ghost" onClick={() => void navigator.clipboard?.writeText(task.result ?? '')}>
+              Copiar
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FlowStep({ run: r, title, agentName }: { run: TaskRun; title: string; agentName: string }) {
+  const label =
+    r.kind === 'subtask' || r.kind === 'correction'
+      ? `${runKindLabel(r.kind)} ${r.subtaskId} · ${title}`
+      : `${runKindLabel(r.kind)}${r.round ? ` (ronda ${r.round})` : ''}`;
+  return (
+    <li class={`flow-step kind-${r.kind} run-${r.status}`}>
+      <div class="flow-head">
+        <span class={`badge status-${r.status === 'running' ? 'streaming' : r.status}`}>{runStatusLabel(r.status)}</span>
+        <strong>{label}</strong>
+        <span class="muted small">
+          {agentName} · {r.modelId}
+          {r.usage && ` · ${r.usage.promptTokens ?? '?'} → ${r.usage.completionTokens ?? '?'} tokens`}
+        </span>
+      </div>
+      {r.errorMessage && <div class="msg-error">{r.errorMessage}</div>}
+      {r.review && <ReviewSummary review={r.review} />}
+      {r.output && !r.review && (
+        <details>
+          <summary class="small">Ver entrega</summary>
+          <div class="flow-output pre">{r.output}</div>
+        </details>
+      )}
+    </li>
+  );
+}
+
+function ReviewSummary({ review }: { review: ReviewContent }) {
+  return (
+    <div class="review">
+      <p>
+        <span class={`badge ${review.verdict === 'aprobado' ? 'ok' : 'warn'}`}>
+          {review.verdict === 'aprobado' ? 'Aprobado' : 'Requiere cambios'}
+        </span>{' '}
+        {review.summary}
+      </p>
+      {review.criteria.length > 0 && (
+        <ul class="criteria">
+          {review.criteria.map((c) => (
+            <li key={c.criterion}>
+              <span class={`badge ${c.status === 'cumple' ? 'ok' : c.status === 'no_cumple' ? 'danger' : 'warn'}`}>
+                {{ cumple: 'Cumple', no_cumple: 'No cumple', no_verificable: 'No verificable' }[c.status]}
+              </span>{' '}
+              {c.criterion}
+              {c.note && <span class="muted small"> · {c.note}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {review.observations.length > 0 && (
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Observación</th>
+                <th>Gravedad</th>
+                <th>Estado</th>
+                <th>Corrección sugerida</th>
+              </tr>
+            </thead>
+            <tbody>
+              {review.observations.map((o) => (
+                <tr key={o.id}>
+                  <td>
+                    <strong>{o.problem}</strong>
+                    {o.evidence && <div class="small muted">{o.evidence}</div>}
+                    {o.subtaskId && <div class="small">Subtarea {o.subtaskId}</div>}
+                  </td>
+                  <td>
+                    <span class={`badge ${o.severity === 'alta' ? 'danger' : o.severity === 'media' ? 'warn' : ''}`}>{o.severity}</span>
+                  </td>
+                  <td>
+                    {o.status.replace('_', ' ')}
+                    {o.justification && <div class="small muted">{o.justification}</div>}
+                  </td>
+                  <td class="small">{o.suggestedFix || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -633,7 +872,7 @@ function PlanView({ plan, task, agents, canApprove, lockOverride, onApprove, onO
               <button class="btn primary" onClick={onApprove}>
                 Aprobar plan
               </button>
-              <span class="muted small">Al aprobarlo queda listo para ejecutarse (Sprint 2.3).</span>
+              <span class="muted small">Al aprobarlo podrás ejecutarlo.</span>
             </div>
           )}
           {plan.status === 'approved' && <p class="ok-text">Plan aprobado el {formatTime(plan.approvedAt)}.</p>}

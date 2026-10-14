@@ -28,14 +28,26 @@ export function migrate(db: DB, migrations: Migration[]): number[] {
   const ordered = [...migrations].sort((a, b) => a.version - b.version);
   for (const m of ordered) {
     if (applied.has(m.version)) continue;
-    db.transaction(() => {
-      db.exec(m.sql);
-      db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
-        m.version,
-        m.name,
-        new Date().toISOString(),
-      );
-    })();
+    // Procedimiento de SQLite para reconstruir tablas: claves foráneas desactivadas
+    // fuera de la transacción y comprobación de integridad antes de confirmar.
+    const fkWasOn = db.pragma('foreign_keys', { simple: true }) === 1;
+    if (m.rebuildsTables) db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec(m.sql);
+        if (m.rebuildsTables) {
+          const broken = db.pragma('foreign_key_check') as unknown[];
+          if (broken.length) throw new Error(`La migración ${m.version} dejó ${broken.length} referencia(s) rotas.`);
+        }
+        db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+          m.version,
+          m.name,
+          new Date().toISOString(),
+        );
+      })();
+    } finally {
+      if (m.rebuildsTables && fkWasOn) db.pragma('foreign_keys = ON');
+    }
     done.push(m.version);
   }
   return done;

@@ -21,7 +21,7 @@ const repo = new Repository(db);
 const recovered = repo.recoverInterruptedMessages();
 if (recovered > 0) log.info(`Se marcaron ${recovered} respuesta(s) interrumpida(s) por el cierre anterior.`);
 const recoveredTasks = new TaskRepository(db).recoverInterruptedTasks();
-if (recoveredTasks > 0) log.info(`Se marcaron ${recoveredTasks} planificación(es) interrumpida(s) por el cierre anterior.`);
+if (recoveredTasks > 0) log.info(`Se recuperaron ${recoveredTasks} tarea(s) interrumpida(s) por el cierre anterior.`);
 
 const app = createApp({
   repo,
@@ -29,6 +29,7 @@ const app = createApp({
   token: createSessionToken(),
   allowedHosts: allowedHosts(config.port),
   providerTimeoutMs: config.providerTimeoutMs,
+  taskCallTimeoutMs: config.taskCallTimeoutMs,
 });
 
 // Interfaz compilada (npm run build). En desarrollo la sirve Vite.

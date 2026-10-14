@@ -7,6 +7,7 @@ import {
   createAgentInput,
   createConversationInput,
   createTaskInput,
+  executeTaskInput,
   idSchema,
   planTaskInput,
   sendMessageInput,
@@ -24,6 +25,7 @@ import { log } from './security/redact.js';
 import type { Repository } from './storage/repository.js';
 import { TaskRepository } from './storage/taskRepository.js';
 import { executionLimits } from './tasks/complexity.js';
+import { ExecutionService } from './tasks/executionService.js';
 import { PlanningService } from './tasks/planningService.js';
 
 export interface AppDeps {
@@ -32,6 +34,8 @@ export interface AppDeps {
   token: string;
   allowedHosts: Set<string>;
   providerTimeoutMs: number;
+  /** Si no se indica, se usa providerTimeoutMs. */
+  taskCallTimeoutMs?: number;
 }
 
 const settingsInput = z.object({
@@ -46,7 +50,9 @@ export function createApp(deps: AppDeps) {
   const { repo, providers } = deps;
   const chat = new ChatService(repo, providers, deps.providerTimeoutMs);
   const tasks = new TaskRepository(repo.db);
-  const planning = new PlanningService(repo, tasks, providers, deps.providerTimeoutMs);
+  const taskTimeout = deps.taskCallTimeoutMs ?? deps.providerTimeoutMs;
+  const planning = new PlanningService(repo, tasks, providers, taskTimeout);
+  const execution = new ExecutionService(repo, tasks, providers, taskTimeout);
   const api = new Hono();
   repo.ensureDefaultAgents();
 
@@ -202,7 +208,7 @@ export function createApp(deps: AppDeps) {
   const taskDetail = (id: string) => {
     const task = tasks.getTaskDetail(id);
     if (!task) throw taskNotFound();
-    return { task, planning: planning.isActive(id) };
+    return { task, planning: planning.isActive(id), executing: execution.isActive(id) };
   };
 
   api.get('/tasks', (c) => c.json({ tasks: tasks.listTasks() }));
@@ -231,6 +237,7 @@ export function createApp(deps: AppDeps) {
   api.delete('/tasks/:id', (c) => {
     const id = c.req.param('id');
     planning.cancel(id);
+    execution.cancel(id);
     if (!tasks.deleteTask(id)) throw taskNotFound();
     return c.json({ deleted: true });
   });
@@ -241,8 +248,33 @@ export function createApp(deps: AppDeps) {
     return c.json(taskDetail(c.req.param('id')), 202);
   });
 
-  /** Detiene la planificación en curso. */
-  api.post('/tasks/:id/stop', (c) => c.json({ stopped: planning.cancel(c.req.param('id')) }));
+  api.post('/tasks/:id/execute', async (c) => {
+    const input = await parseJson(c, executeTaskInput);
+    const id = c.req.param('id');
+    if (execution.isActive(id) || planning.isActive(id)) {
+      throw new HttpError(409, 'invalid_request', 'La tarea ya tiene un proceso en curso.', 'Espera a que termine o detenlo.');
+    }
+    await execution.start(id, input, (taskId) => planning.isActive(taskId));
+    return c.json(taskDetail(id), 202);
+  });
+
+  /** Detiene la planificación o la ejecución en curso. */
+  api.post('/tasks/:id/stop', (c) => {
+    const id = c.req.param('id');
+    const stopped = planning.cancel(id) || execution.cancel(id);
+    return c.json({ stopped });
+  });
+
+  /** El usuario acepta el resultado y cierra la tarea (la conserva en el historial). */
+  api.post('/tasks/:id/accept', (c) => {
+    const task = tasks.getTask(c.req.param('id'));
+    if (!task) throw taskNotFound();
+    if (task.status !== 'completed') {
+      throw new HttpError(409, 'invalid_request', 'Solo se acepta un resultado terminado.', 'Ejecuta el plan primero.');
+    }
+    tasks.setTaskStatus(task.id, 'done');
+    return c.json(taskDetail(task.id));
+  });
 
   api.post('/tasks/:id/approve', async (c) => {
     const input = await parseJson(c, approvePlanInput);
@@ -263,6 +295,7 @@ export function createApp(deps: AppDeps) {
     const id = c.req.param('id');
     if (!tasks.getTask(id)) throw taskNotFound();
     planning.cancel(id);
+    execution.cancel(id);
     tasks.setTaskStatus(id, 'cancelled');
     return c.json(taskDetail(id));
   });
@@ -322,8 +355,11 @@ export function createApp(deps: AppDeps) {
   api.delete('/data', async (c) => {
     await parseJson(c, deleteAllInput);
     for (const conv of repo.listConversations()) chat.stop(conv.id);
-    for (const task of tasks.listTasks()) planning.cancel(task.id);
-    await planning.idle();
+    for (const task of tasks.listTasks()) {
+      planning.cancel(task.id);
+      execution.cancel(task.id);
+    }
+    await Promise.all([planning.idle(), execution.idle()]);
     repo.deleteAllData();
     return c.json({ deleted: true });
   });

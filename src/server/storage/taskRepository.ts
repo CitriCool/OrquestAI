@@ -6,6 +6,7 @@ import type {
   ExecutionLimits,
   Plan,
   PlanContent,
+  ReviewContent,
   Task,
   TaskDetail,
   TaskRun,
@@ -25,6 +26,9 @@ interface TaskRow {
   status: Task['status'];
   error_kind: ErrorKind | null;
   error_message: string | null;
+  result: string | null;
+  outcome: Task['outcome'];
+  limitations: string;
   created_at: string;
   updated_at: string;
 }
@@ -52,9 +56,14 @@ interface RunRow {
   plan_id: string | null;
   agent_id: string | null;
   kind: TaskRun['kind'];
+  execution: number | null;
+  round: number | null;
+  subtask_id: string | null;
   provider_id: string;
   model_id: string;
   status: TaskRun['status'];
+  output: string | null;
+  review: string | null;
   error_kind: ErrorKind | null;
   error_message: string | null;
   prompt_tokens: number | null;
@@ -79,6 +88,9 @@ function toTask(r: TaskRow): Task {
     status: r.status,
     errorKind: r.error_kind,
     errorMessage: r.error_message,
+    result: r.result,
+    outcome: r.outcome,
+    limitations: JSON.parse(r.limitations) as string[],
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -109,9 +121,14 @@ function toRun(r: RunRow): TaskRun {
     planId: r.plan_id,
     agentId: r.agent_id,
     kind: r.kind,
+    execution: r.execution,
+    round: r.round,
+    subtaskId: r.subtask_id,
     providerId: r.provider_id,
     modelId: r.model_id,
     status: r.status,
+    output: r.output,
+    review: r.review ? (JSON.parse(r.review) as ReviewContent) : null,
     errorKind: r.error_kind,
     errorMessage: r.error_message,
     usage: r.cost_kind
@@ -190,6 +207,19 @@ export class TaskRepository {
     this.db
       .prepare('UPDATE tasks SET status = ?, error_kind = ?, error_message = ?, updated_at = ? WHERE id = ?')
       .run(status, error?.kind ?? null, error ? redact(error.message) : null, now(), id);
+  }
+
+  /** Guarda el resultado final de una ejecución. */
+  setTaskResult(
+    id: string,
+    result: { status: Task['status']; result: string | null; outcome: Task['outcome']; limitations: string[] },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE tasks SET status = ?, result = ?, outcome = ?, limitations = ?, error_kind = NULL, error_message = NULL,
+           updated_at = ? WHERE id = ?`,
+      )
+      .run(result.status, result.result, result.outcome, JSON.stringify(result.limitations), now(), id);
   }
 
   deleteTask(id: string): boolean {
@@ -284,25 +314,56 @@ export class TaskRepository {
 
   startRun(input: {
     taskId: string;
+    planId?: string | null;
     agentId: string | null;
     kind: TaskRun['kind'];
+    execution?: number | null;
+    round?: number | null;
+    subtaskId?: string | null;
     providerId: string;
     modelId: string;
   }): TaskRun {
     const id = randomUUID();
     this.db
       .prepare(
-        `INSERT INTO task_runs (id, task_id, agent_id, kind, provider_id, model_id, status, started_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+        `INSERT INTO task_runs (id, task_id, plan_id, agent_id, kind, execution, round, subtask_id, provider_id, model_id,
+           status, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
       )
-      .run(id, input.taskId, input.agentId, input.kind, input.providerId, input.modelId, now());
+      .run(
+        id,
+        input.taskId,
+        input.planId ?? null,
+        input.agentId,
+        input.kind,
+        input.execution ?? null,
+        input.round ?? null,
+        input.subtaskId ?? null,
+        input.providerId,
+        input.modelId,
+        now(),
+      );
     return this.getRun(id)!;
+  }
+
+  /** Número de la próxima ejecución del plan de una tarea. */
+  nextExecution(taskId: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(MAX(execution), 0) + 1 AS n FROM task_runs WHERE task_id = ?')
+      .get(taskId) as { n: number };
+    return row.n;
+  }
+
+  /** Guarda la revisión validada de una llamada de revisión. */
+  setRunReview(id: string, review: ReviewContent): void {
+    this.db.prepare('UPDATE task_runs SET review = ? WHERE id = ?').run(JSON.stringify(review), id);
   }
 
   finishRun(
     id: string,
     result: {
       status: Exclude<TaskRun['status'], 'running'>;
+      output?: string | null;
       usage?: Usage | null;
       errorKind?: ErrorKind | null;
       errorMessage?: string | null;
@@ -310,11 +371,12 @@ export class TaskRepository {
   ): void {
     this.db
       .prepare(
-        `UPDATE task_runs SET status = ?, prompt_tokens = ?, completion_tokens = ?, cost = ?, cost_kind = ?,
+        `UPDATE task_runs SET status = ?, output = ?, prompt_tokens = ?, completion_tokens = ?, cost = ?, cost_kind = ?,
            error_kind = ?, error_message = ?, finished_at = ? WHERE id = ?`,
       )
       .run(
         result.status,
+        result.output ?? null,
         result.usage?.promptTokens ?? null,
         result.usage?.completionTokens ?? null,
         result.usage?.cost ?? null,
@@ -338,9 +400,9 @@ export class TaskRepository {
   }
 
   /**
-   * Tareas que quedaron planificando porque la aplicación se cerró: vuelven
-   * a su plan vigente si lo tienen (o a «plan_failed») y sus llamadas en
-   * curso pasan a «cancelled».
+   * Tareas que quedaron a medias porque la aplicación se cerró. Las que
+   * planificaban vuelven a su plan vigente (o a «plan_failed»); las que se
+   * ejecutaban quedan «interrupted». Sus llamadas en curso pasan a «cancelled».
    */
   recoverInterruptedTasks(): number {
     return this.db.transaction(() => {
@@ -351,7 +413,14 @@ export class TaskRepository {
            WHERE status = 'running'`,
         )
         .run(now());
-      return this.db
+      const interrupted = this.db
+        .prepare(
+          `UPDATE tasks SET status = 'interrupted', error_kind = 'cancelled',
+             error_message = 'La ejecución se interrumpió porque la aplicación se cerró.', updated_at = ?
+           WHERE status = 'running'`,
+        )
+        .run(now()).changes;
+      return interrupted + this.db
         .prepare(
           `UPDATE tasks SET
              status = COALESCE(

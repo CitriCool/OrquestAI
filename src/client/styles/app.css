@@ -642,8 +642,111 @@ th {
   background: var(--danger-bg);
   color: var(--danger);
 }
-.badge.task-planning {
+.badge.task-planning,
+.badge.task-running {
   color: var(--accent);
+}
+.badge.task-completed,
+.badge.task-done {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.badge.task-failed,
+.badge.task-interrupted {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.plan-wrap {
+  margin-top: 12px;
+}
+.plan-wrap > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.execution {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 4px;
+}
+.flow {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.flow-step {
+  position: relative;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+.flow-step::before {
+  content: '';
+  position: absolute;
+  left: -21px;
+  top: 12px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.flow-step.run-complete::before {
+  background: var(--ok);
+}
+.flow-step.run-error::before {
+  background: var(--danger);
+}
+.flow-step.run-running::before {
+  background: var(--accent);
+}
+.flow-step.pending {
+  opacity: 0.7;
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+.flow-step.kind-review,
+.flow-step.kind-review_repair {
+  border-left: 3px solid var(--warn);
+}
+.flow-step.kind-synthesis {
+  border-left: 3px solid var(--ok);
+}
+.flow-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.flow-output,
+.result-body {
+  margin-top: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 0.92em;
+}
+.result-body {
+  max-height: 640px;
+}
+.review p {
+  margin: 6px 0;
+}
+.criteria {
+  margin: 4px 0;
+  padding-left: 0;
+  list-style: none;
+}
+.criteria li {
+  margin: 3px 0;
+}
+.result {
+  margin-top: 12px;
 }
 
 @media (max-width: 760px) {

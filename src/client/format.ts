@@ -60,8 +60,17 @@ export function taskStatusLabel(s: TaskStatus): string {
     plan_ready: 'Plan por revisar',
     plan_failed: 'Sin plan válido',
     approved: 'Plan aprobado',
+    running: 'Ejecutando…',
+    completed: 'Resultado listo',
+    interrupted: 'Interrumpida',
+    failed: 'Falló la ejecución',
+    done: 'Terminada',
     cancelled: 'Cancelada',
   }[s];
+}
+
+export function runStatusLabel(s: TaskRun['status']): string {
+  return { running: 'En curso', complete: 'Completada', error: 'Error', cancelled: 'Detenida' }[s];
 }
 
 export function planStatusLabel(s: PlanStatus): string {
@@ -77,7 +86,15 @@ export function reviewLevelLabel(r: ReviewLevel): string {
 }
 
 export function runKindLabel(k: TaskRun['kind']): string {
-  return { plan: 'Plan', plan_repair: 'Corrección del plan' }[k];
+  return {
+    plan: 'Plan',
+    plan_repair: 'Corrección del plan',
+    subtask: 'Subtarea',
+    review: 'Revisión crítica',
+    review_repair: 'Corrección del formato de la revisión',
+    correction: 'Corrección de la subtarea',
+    synthesis: 'Síntesis',
+  }[k];
 }
 
 export function formatTime(iso: string | null): string {

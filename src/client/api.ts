@@ -97,11 +97,15 @@ export const api = {
     reviewLevel: ReviewLevel;
     complexityOverride: ComplexityLevel | null;
   }) => json<{ task: Task }>('POST', '/tasks', input).then((r) => r.task),
-  getTask: (id: string) => json<{ task: TaskDetail; planning: boolean }>('GET', `/tasks/${encodeURIComponent(id)}`),
+  getTask: (id: string) =>
+    json<{ task: TaskDetail; planning: boolean; executing: boolean }>('GET', `/tasks/${encodeURIComponent(id)}`),
   updateTask: (id: string, input: { title?: string; complexityOverride?: ComplexityLevel | null }) =>
     json<{ task: TaskDetail }>('PATCH', `/tasks/${encodeURIComponent(id)}`, input),
   planTask: (id: string, input: { providerId: string; modelId: string; feedback?: string }) =>
     json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/plan`, input),
+  executeTask: (id: string, input: { providerId: string; modelId: string }) =>
+    json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/execute`, input),
+  acceptTask: (id: string) => json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/accept`),
   stopTask: (id: string) => json<{ stopped: boolean }>('POST', `/tasks/${encodeURIComponent(id)}/stop`),
   approvePlan: (id: string, planId: string) =>
     json<{ task: TaskDetail }>('POST', `/tasks/${encodeURIComponent(id)}/approve`, { planId }),

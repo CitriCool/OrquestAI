@@ -1,4 +1,4 @@
-import type { Agent, Plan, PlanTaskInput, Task, TaskRun } from '../../shared/schemas.js';
+import type { Agent, Plan, PlanTaskInput, Task } from '../../shared/schemas.js';
 import { systemPrompt } from '../chat/chatService.js';
 import { HttpError } from '../http.js';
 import { assertModelAllowed, requireUsableProvider } from '../policies/modelPolicy.js';
@@ -8,6 +8,7 @@ import { log } from '../security/redact.js';
 import type { Repository } from '../storage/repository.js';
 import type { TaskRepository } from '../storage/taskRepository.js';
 import { estimateComplexity, executionLimits } from './complexity.js';
+import { emptyResponseError, recordedCall } from './modelCall.js';
 import { parsePlan } from './planParser.js';
 
 export const COORDINATOR_ID = 'coordinador';
@@ -77,6 +78,9 @@ export class PlanningService {
     if (task.status === 'cancelled') {
       throw new HttpError(409, 'invalid_request', 'La tarea está cancelada.', 'Crea una tarea nueva.');
     }
+    if (task.status === 'running') {
+      throw new HttpError(409, 'invalid_request', 'La tarea se está ejecutando.', 'Espera a que termine o detenla.');
+    }
     if (input.feedback && !this.tasks.currentPlan(taskId)) {
       throw new HttpError(400, 'invalid_request', 'No hay un plan previo que corregir.', 'Genera primero un plan.');
     }
@@ -144,15 +148,26 @@ export class PlanningService {
               : 'No entregaste ninguna respuesta. Devuelve SOLO el objeto JSON del plan, sin razonamiento previo.',
           });
         }
-        const run = this.tasks.startRun({
-          taskId: task.id,
-          agentId: coordinator.id,
-          kind: attempt === 1 ? 'plan' : 'plan_repair',
-          providerId: provider.id,
-          modelId: input.modelId,
-        });
-        runIds.push(run.id);
-        const response = await this.call(run, provider, input.modelId, messages, coordinator, controller);
+        const response = await recordedCall(
+          { repo: this.repo, tasks: this.tasks, timeoutMs: this.timeoutMs },
+          {
+            run: {
+              taskId: task.id,
+              agentId: coordinator.id,
+              kind: attempt === 1 ? 'plan' : 'plan_repair',
+              providerId: provider.id,
+              modelId: input.modelId,
+            },
+            provider,
+            messages,
+            maxOutputTokens: coordinator.maxOutputTokens ?? PLAN_MAX_OUTPUT_TOKENS,
+            temperature: coordinator.temperature ?? PLAN_TEMPERATURE,
+            responseFormat: 'json',
+            signal: controller.signal,
+            // También las llamadas fallidas quedan asociadas a esta planificación.
+            onStart: (run) => runIds.push(run.id),
+          },
+        );
         raw = response.text;
 
         const result: ReturnType<typeof parsePlan> = raw.trim()
@@ -160,7 +175,7 @@ export class PlanningService {
               raw,
               agents.map((a) => a.id),
             )
-          : { ok: false, errors: [emptyResponseError(response.finishReason)] };
+          : { ok: false, errors: [emptyResponseError(response.finishReason, 'el plan')] };
         if (result.ok) {
           const level = task.complexityOverride ?? result.content.complexity.level;
           const plan = this.tasks.addPlan({
@@ -217,39 +232,6 @@ export class PlanningService {
     }
   }
 
-  /** Una llamada al modelo, registrada en el historial de la tarea. */
-  private async call(
-    run: TaskRun,
-    provider: ProviderAdapter,
-    modelId: string,
-    messages: ChatTurn[],
-    coordinator: Agent,
-    controller: AbortController,
-  ): Promise<{ text: string; finishReason: string | null }> {
-    try {
-      const response = await provider.generateResponse({
-        modelId,
-        messages,
-        maxOutputTokens: coordinator.maxOutputTokens ?? PLAN_MAX_OUTPUT_TOKENS,
-        temperature: coordinator.temperature ?? PLAN_TEMPERATURE,
-        responseFormat: 'json',
-        signal: controller.signal,
-        timeoutMs: this.timeoutMs,
-      });
-      this.tasks.finishRun(run.id, { status: 'complete', usage: provider.getReportedUsage(response) });
-      this.repo.recordObservation(provider.id, { ok: true });
-      return { text: response.text, finishReason: response.finishReason };
-    } catch (err) {
-      const e = err instanceof ProviderError ? err : provider.classifyProviderError(err);
-      this.tasks.finishRun(run.id, {
-        status: e.kind === 'cancelled' ? 'cancelled' : 'error',
-        errorKind: e.kind,
-        errorMessage: e.message,
-      });
-      if (e.kind !== 'cancelled') this.repo.recordObservation(provider.id, { ok: false, kind: e.kind });
-      throw e;
-    }
-  }
 }
 
 /**
@@ -289,13 +271,6 @@ function taskData(
     );
   }
   return lines.filter((l): l is string => l !== null).join('\n');
-}
-
-/** Los modelos de razonamiento pueden gastar el límite de tokens sin llegar a escribir la respuesta. */
-function emptyResponseError(finishReason: string | null): string {
-  return finishReason === 'length'
-    ? 'El modelo agotó el límite de tokens sin entregar el plan (probablemente lo gastó razonando). Prueba con otro modelo.'
-    : 'El modelo devolvió una respuesta vacía.';
 }
 
 function taskNotFound() {
